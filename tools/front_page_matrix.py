@@ -115,8 +115,8 @@ def commit_history_table(history: list[dict]) -> list[str]:
         "**PSR / BER / mean decode time per block**. With one block, PSR is necessarily "
         "binary; BER carries the finer error information. Click a cell to reveal the "
         "geometry, sample rates, payload size, and bit errors.", "",
-        "| JunaCore commit | code rate | " + " | ".join(HEADERS) + " |",
-        "|---|---:|" + "---:|" * len(HEADERS),
+        "| JunaCore commit | code rate | N | " + " | ".join(HEADERS) + " |",
+        "|---|---:|---:|" + "---:|" * len(HEADERS),
     ]
     for commit in commits:
         if len(commit) != 40:
@@ -137,9 +137,16 @@ def commit_history_table(history: list[dict]) -> list[str]:
             if any(row["status"] != "ok" for row in results.values()):
                 raise ValueError(
                     f"commit {commit[:7]} rate {label} contains a failed benchmark")
+            nfft_values = {int(row["nfft"]) for row in results.values()}
+            if len(nfft_values) != 1:
+                raise ValueError(
+                    f"commit {commit[:7]} rate {label} mixes FFT sizes: "
+                    f"{sorted(nfft_values)}")
 
             cells = [history_cell(results[algorithm]) for algorithm in ALGORITHMS]
-            lines.append(f"| {link} | {label} | " + " | ".join(cells) + " |")
+            nfft = next(iter(nfft_values))
+            lines.append(
+                f"| {link} | {label} | {nfft} | " + " | ".join(cells) + " |")
     return lines
 
 

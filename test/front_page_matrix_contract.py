@@ -35,9 +35,10 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("not directly comparable", text)
         self.assertIn("modem rate equals the capture rate", text)
         self.assertIn("does not include JUNA Frame-wide LDPC", text)
-        self.assertIn("| JunaCore commit | code rate | Standard OFDM | Partial FFT + FEC | JUNA-Lite | JUNA-Wz | JUNA-WCz |", text)
+        self.assertIn("| JunaCore commit | code rate | N | Standard OFDM | Partial FFT + FEC | JUNA-Lite | JUNA-Wz | JUNA-WCz |", text)
         for code_rate in ("1/16", "1/8", "1/4", "1/2"):
             self.assertIn(f"| {code_rate} |", text)
+        self.assertIn("| 1/16 | 1024 |", text)
         self.assertIn("one independently coded packet and one OFDM block", text)
         self.assertIn("PSR / BER / mean decode time per block", text)
         self.assertIn("0a2d927", text)
