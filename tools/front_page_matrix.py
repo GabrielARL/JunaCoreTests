@@ -11,6 +11,7 @@ END = "<!-- juna:receiver-matrix:end -->"
 ALGORITHMS = ["Standard OFDM", "Partial FFT+FEC", "JUNA-Lite", "JUNA-Wz", "JUNA-WCz"]
 HEADERS = ["Standard OFDM", "Partial FFT + FEC", "JUNA-Lite", "JUNA-Wz", "JUNA-WCz"]
 SNRS = [0, 5, 10, 15, 20, 25, 30]
+JUNA_CORE_COMMITS = "https://github.com/GabrielARL/JunaCore.jl/commit"
 
 
 def rows(path: Path) -> list[dict]:
@@ -31,16 +32,21 @@ def value(row: dict) -> str:
     return f"{fmt_psr(row['psr'])} / {fmt_ber(row['ber'])}"
 
 
-def cell_details(row: dict, config: dict) -> str:
+def history_cell(row: dict) -> str:
+    milliseconds = 1_000 * float(row["mean_decode_seconds_per_block"])
+    summary = f"{value(row)} / {milliseconds:.2f} ms"
     items = [
-        f"profile: {row['profile']}", f"N: {config['nfft']}", f"CP: {config['cp']}",
+        f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
+        f"N: {row['nfft']}", f"CP: {row['cp']}",
         f"modem rate: {row['modem_fs']} samples/s",
         f"capture rate: {row['capture_fs']} samples/s",
         f"packets: {row['packets']}", f"seed: {row['seed']}",
-        f"mean decode: {float(row['mean_decode_seconds']):.4f} s",
+        f"mean decode: {milliseconds:.2f} ms/block",
         f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
     ]
-    return "<br>".join(html.escape(item) for item in items)
+    details = "<br>".join(html.escape(item) for item in items)
+    return ('<details class="cell-details"><summary>' + summary +
+            '</summary><sub>' + details + '</sub></details>')
 
 
 def frame_wide_table(configs: list[dict]) -> list[str]:
@@ -71,9 +77,53 @@ def frame_wide_table(configs: list[dict]) -> list[str]:
     return lines
 
 
+def commit_history_table(history: list[dict]) -> list[str]:
+    grouped = {}
+    for row in history:
+        commit = row["juna_core_commit"]
+        results = grouped.setdefault(commit, {})
+        if row["algorithm"] in results:
+            raise ValueError(
+                f"commit {commit[:7]} contains duplicate {row['algorithm']} results")
+        results[row["algorithm"]] = row
+
+    lines = [
+        "### SG-1 at 20 dB commit history", "",
+        "This comparison fixes the channel, SNR, seed, and ten-packet workload. "
+        "Under this diagnostic profile, one independently coded packet is one OFDM block. "
+        "Each cell is **PSR / BER / mean decode time per block**. Click a cell to reveal "
+        "the fixed geometry, sample rates, packet count, seed, and bit errors.", "",
+        "| JunaCore commit | " + " | ".join(HEADERS) + " |",
+        "|---|" + "---:|" * len(HEADERS),
+    ]
+    for commit, results in grouped.items():
+        if len(commit) != 40:
+            raise ValueError(f"JunaCore commit must be a full 40-character SHA: {commit}")
+        missing = sorted(set(ALGORITHMS) - set(results))
+        extra = sorted(set(results) - set(ALGORITHMS))
+        if missing or extra:
+            raise ValueError(
+                f"commit {commit[:7]} has incomplete receiver results; "
+                f"missing={missing}, extra={extra}")
+        if any(row["channel"] != "red1" or float(row["snr_db"]) != 20
+               for row in results.values()):
+            raise ValueError(f"commit {commit[:7]} mixes benchmark configurations")
+        if any(row["status"] != "ok" for row in results.values()):
+            raise ValueError(f"commit {commit[:7]} contains a failed benchmark")
+
+        cells = []
+        for algorithm in ALGORITHMS:
+            row = results[algorithm]
+            cells.append(history_cell(row))
+        link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
+        lines.append(f"| {link} | " + " | ".join(cells) + " |")
+    return lines
+
+
 def render(repo: Path) -> str:
     sweep = rows(repo / "reports" / "all_channels_snr_sweep.csv")
     configs = rows(repo / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv")
+    history = rows(repo / "reports" / "sg1_20db_commit_history.csv")
     by_key = {(row["channel"], int(float(row["snr_db"])), row["algorithm"]): row for row in sweep}
     required = {(config["channel"], snr, algorithm)
                 for config in configs for snr in SNRS for algorithm in ALGORITHMS}
@@ -100,19 +150,8 @@ def render(repo: Path) -> str:
              "instead of Rpchan's half-rate modem configuration. A packet succeeds only "
              "when every payload bit is correct, so the measured BER values naturally "
              "produce PSR 0/10 throughout this small diagnostic.", "",
-             "### Five per-symbol receivers at 20 dB", "",
-             "Each cell is **PSR / BER**. Click a cell to reveal its configuration, sample rates, "
-             "packet count, seed, decode time, and bit errors.", "",
-             "| site | " + " | ".join(HEADERS) + " |",
-             "|---|" + "---:|" * len(HEADERS)]
-    for config in configs:
-        channel = config["channel"]
-        cells = []
-        for algorithm in ALGORITHMS:
-            row = by_key[(channel, 20, algorithm)]
-            cells.append('<details class="cell-details"><summary>' + value(row) +
-                         '</summary><sub>' + cell_details(row, config) + '</sub></details>')
-        lines.append(f"| {config['label']} | " + " | ".join(cells) + " |")
+             ]
+    lines += commit_history_table(history)
 
     lines += ["", "### All per-symbol SNR configurations", ""]
     for config in configs:
@@ -131,7 +170,9 @@ def render(repo: Path) -> str:
               "PSR = packet-success rate. BER = payload bit-error rate. Sources: "
               "[`reports/paper_frame_wide_all_channels_stateful_full_20db.csv`]"
               "(reports/paper_frame_wide_all_channels_stateful_full_20db.csv) and "
-              "[`reports/all_channels_snr_sweep.csv`](reports/all_channels_snr_sweep.csv).",
+              "[`reports/all_channels_snr_sweep.csv`](reports/all_channels_snr_sweep.csv). "
+              "Commit history: [`reports/sg1_20db_commit_history.csv`]"
+              "(reports/sg1_20db_commit_history.csv).",
               END]
     return "\n".join(lines)
 
