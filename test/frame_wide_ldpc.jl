@@ -46,6 +46,21 @@ function compact_receiver(factory)
     )
 end
 
+function compact_frame_receiver(profile)
+    FrameWideJuna.FrameWideLDPCModulation(
+        frame_receiver = profile,
+        nc = 128,
+        np = 32,
+        ldpc_k = 24,
+        ldpc_n = 48,
+        ldpc_npc = 2,
+        partial_fft_parts = 1,
+        partial_fft_nbands = 4,
+        pilot_ratio = 1 / 4,
+        inner_pilot_ratio = 1 / 3,
+    )
+end
+
 @testset verbose = true "JUNA frame-wide LDPC receiver" begin
     @testset "band RLS carries weights and inverse covariance across symbols" begin
         weights = zeros(ComplexF64, 2)
@@ -155,6 +170,89 @@ end
               [:JunaFrameWideLDPC, :Modulation]
     end
 
+    @testset "five receiver algorithms use one true frame-wide LDPC graph" begin
+        profiles = (:standard, :pfft, :lite, :full, :coupled)
+        blocks = 3
+        payload = Bool[
+            isodd(count_ones(31i + 7))
+            for i in 1:FrameWideJuna._frame_payload_capacity(
+                compact_frame_receiver(:standard), blocks)
+        ]
+
+        for profile in profiles
+            @testset "$profile frame decoder" begin
+                receiver = compact_frame_receiver(profile)
+                @test receiver.frame_receiver === profile
+                @test FrameWideJuna._frame_receiver_profile(receiver) === profile
+                @test isvalid(receiver, FRAME_WIDE_FC, FRAME_WIDE_FS)
+
+                waveform = FrameWideModulations.modulate(
+                    receiver, payload, FRAME_WIDE_FC, FRAME_WIDE_FS)
+                layout = FrameWideJuna._layout(receiver, FRAME_WIDE_FS)
+                code = FrameWideJuna._frame_code(receiver, blocks)
+                observations = frame_observations(receiver, waveform, blocks)
+                trace = FrameWideJuna._frame_receiver_trace(
+                    receiver, code, layout, observations)
+                metrics, cfo = FrameWideModulations.demodulate(
+                    receiver, length(payload), waveform,
+                    FRAME_WIDE_FC, FRAME_WIDE_FS)
+
+                @test trace.profile === profile
+                @test trace.best.valid
+                @test trace.best.syndrome == 0
+                @test (code.k, code.n) == (blocks * 24, blocks * 48)
+                @test any(code.check_vars) do variables
+                    length(unique(cld(variable, 48) for variable in variables)) > 1
+                end
+                @test (metrics .> 0) == payload
+                @test cfo == 0.0
+            end
+        end
+
+        @test !isvalid(
+            compact_frame_receiver(:unknown),
+            FRAME_WIDE_FC,
+            FRAME_WIDE_FS,
+        )
+        @test !isvalid(
+            FrameWideJuna.FrameWideLDPCModulation(
+                frame_receiver=:full,
+                bpc=1,
+                nc=128,
+                np=32,
+                ldpc_k=24,
+                ldpc_n=48,
+                ldpc_npc=2,
+                partial_fft_parts=1,
+                partial_fft_nbands=4,
+                pilot_ratio=1 / 4,
+                inner_pilot_ratio=1 / 3,
+            ),
+            FRAME_WIDE_FC,
+            FRAME_WIDE_FS,
+        )
+    end
+
+    @testset "default frame code stays sparse as frame dimensions grow" begin
+        receiver = compact_frame_receiver(:standard)
+        blocks = 10
+        code = FrameWideJuna._frame_code(receiver, blocks)
+        message = Bool[isodd(count_ones(17i + 5)) for i in 1:code.k]
+        codeword = FrameWideJuna._encode(code, message)
+
+        @test code.method == "frame_sparse"
+        @test code.H isa BitMatrix
+        @test count(code.gen) == code.k * receiver.ldpc_npc
+        @test sum(length, code.check_vars) ==
+              code.k * receiver.ldpc_npc + (code.n - code.k)
+        @test codeword[1:code.k] == message
+        @test all(iszero, mod.(Int.(code.H) * Int.(codeword), 2))
+        @test any(code.check_vars) do variables
+            length(unique(cld(variable, Int(receiver.ldpc_n))
+                          for variable in variables)) > 1
+        end
+    end
+
     @testset "three OFDM blocks share one LDPC codeword and one parity graph" begin
         receiver = compact_receiver(FrameWideJuna.FrameWideLDPCModulation)
         blocks = 3
@@ -252,6 +350,10 @@ end
         @test length(layout.data_idx) == 94
         @test all(column -> count(@view code.H[:, column]) == receiver.ldpc_npc,
                   1:code.k)
+        message = Bool[isodd(count_ones(19i + 3)) for i in 1:code.k]
+        codeword = FrameWideJuna._encode(code, message)
+        @test codeword[1:code.k] == message
+        @test all(iszero, mod.(Int.(code.H) * Int.(codeword), 2))
         @test FrameWideJuna._frame_inner_bit(receiver, 1) === false
         @test FrameWideJuna._frame_inner_bit(receiver, 6) === true
         @test !isvalid(FrameWideJuna.FrameWideLDPCModulation(

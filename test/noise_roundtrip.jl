@@ -47,19 +47,20 @@ const NOISE_FS = 24_000.0
 const NOISE_SEED = 20_260_710
 const NOISE_PACKETS = 12
 
-# Generate payload, clean waveform, and unit complex noise exactly once. Every
-# receiver therefore sees identical bits and samples at each SNR.
+# Generate payload and unit complex noise exactly once. Receivers sharing one
+# transmit FEC see identical samples; Frame-wide LDPC uses its matched codeword
+# while retaining the same payload and noise realization.
 function noise_trials(npackets::Int; seed::Int = NOISE_SEED)
     tx = NoiseJuna.LiteModulation()
     bps = NoiseModulations.bitspersymbol(tx)
+    nsamples = NoiseModulations.signallength(
+        tx, bps, NOISE_FC, NOISE_FS)
     rng = Xoshiro(seed)
     [begin
         bits = rand(rng, Bool, bps)
-        clean = NoiseModulations.modulate(
-            tx, bits, NOISE_FC, NOISE_FS)
-        unit_noise = randn(rng, length(clean)) .+
-                     im .* randn(rng, length(clean))
-        (; bits, clean, unit_noise)
+        unit_noise = randn(rng, nsamples) .+
+                     im .* randn(rng, nsamples)
+        (; bits, unit_noise)
     end for _ in 1:npackets]
 end
 
@@ -70,7 +71,12 @@ function noise_point(descriptor, snr_db, trials)
     nerr = 0
     npass = 0
     for trial in trials
-        waveform = trial.clean .+ sigma .* trial.unit_noise
+        clean = NoiseModulations.modulate(
+            m, trial.bits, NOISE_FC, NOISE_FS)
+        length(clean) == length(trial.unit_noise) ||
+            throw(DimensionMismatch(
+                "matched receiver waveform and shared noise differ in length"))
+        waveform = clean .+ sigma .* trial.unit_noise
         metrics, _ = NoiseModulations.demodulate(
             m, length(trial.bits), waveform, NOISE_FC, NOISE_FS)
         e = count((metrics .> 0) .!= trial.bits)
@@ -84,12 +90,13 @@ end
 # Assert the same waterfall shape for every receiver: clean above threshold,
 # still erroring at the edge, and genuinely channel-limited at the floor.
 function assert_waterfall(descriptor, trials)
-    clean = noise_point(descriptor, 4.0, trials)
+    clean_snr = descriptor.profile === :frame_wide_ldpc ? 7.0 : 4.0
+    clean = noise_point(descriptor, clean_snr, trials)
     edge = noise_point(descriptor, 1.5, trials)
     floor = noise_point(descriptor, 0.0, trials)
 
-    # Clean sentinel: 4 dB is comfortably past threshold for every receiver
-    # (measured BER == 0 across seeds). An upward waterfall shift breaks this.
+    # Ordinary codes are clean at 4 dB; the distinct sparse frame code is clean
+    # at its measured 7 dB sentinel. An upward waterfall shift breaks this.
     @test clean.ber == 0.0
     @test clean.psr == 1.0
 
@@ -122,9 +129,23 @@ end
     @testset "seeded payload and noise fixture is reproducible run to run" begin
         again = noise_trials(NOISE_PACKETS)
         @test [trial.bits for trial in trials] == [trial.bits for trial in again]
-        @test [trial.clean for trial in trials] == [trial.clean for trial in again]
         @test [trial.unit_noise for trial in trials] ==
               [trial.unit_noise for trial in again]
+        ordinary = public_receiver_descriptors()[1:5]
+        reference = [
+            NoiseModulations.modulate(
+                public_receiver(first(ordinary)), trial.bits,
+                NOISE_FC, NOISE_FS)
+            for trial in trials
+        ]
+        for descriptor in ordinary[2:end]
+            @test [
+                NoiseModulations.modulate(
+                    public_receiver(descriptor), trial.bits,
+                    NOISE_FC, NOISE_FS)
+                for trial in trials
+            ] == reference
+        end
     end
 end
 

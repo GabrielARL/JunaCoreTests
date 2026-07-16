@@ -111,44 +111,52 @@ const SYNTHETIC_CHANNEL_FS = 24_000.0
         )
     end
 
-    @testset "every receiver shares one physical-channel waterfall" begin
+    @testset "every receiver uses matched FEC on one physical-channel waterfall" begin
         assert_public_receiver_catalog()
-        tx_modem = SyntheticChannelJuna.LiteModulation()
-        nbits = SyntheticChannelModulations.bitspersymbol(tx_modem)
+        nbits = SyntheticChannelModulations.bitspersymbol(
+            SyntheticChannelJuna.LiteModulation())
         profile = paper_channel_profile(SYNTHETIC_CHANNEL_FS; seed = 71)
         scales = zeros(length(profile.taps))
         scales[profile.delay_samples .+ 1] .= range(-8e-5, 8e-5;
                                                     length = length(profile.delay_samples))
         payload_rng = Xoshiro(133)
-        trials = [begin
-            bits = rand(payload_rng, Bool, nbits)
-            transmitted = SyntheticChannelModulations.modulate(
-                tx_modem, bits, SYNTHETIC_CHANNEL_FC, SYNTHETIC_CHANNEL_FS,
-            )
-            clean = apply_channel(
-                transmitted, profile;
-                doppler_scales = scales, fc = SYNTHETIC_CHANNEL_FC,
-            )
-            (; bits, transmitted, clean)
-        end for _ in 1:4]
+        payloads = [rand(payload_rng, Bool, nbits) for _ in 1:4]
         snrs = (20.0, 4.0, -2.0)
-        received = Dict(snr => [
-            add_awgn(trial.clean, snr; rng = Xoshiro(10_000 + 100snr_id + trial_id))
-            for (trial_id, trial) in enumerate(trials)
-        ] for (snr_id, snr) in enumerate(snrs))
-
-        @test all(length(trial.clean) ==
-                  length(trial.transmitted) + length(profile.taps) - 1 for trial in trials)
-        @test all(trial.clean[1:length(trial.transmitted)] != trial.transmitted for trial in trials)
         @test maximum(abs.(scales)) > 0
         for descriptor in public_receiver_descriptors()
             @testset "$(descriptor.name)" begin
+                receiver = public_receiver(descriptor)
+                trials = [begin
+                    transmitted = SyntheticChannelModulations.modulate(
+                        receiver, bits,
+                        SYNTHETIC_CHANNEL_FC, SYNTHETIC_CHANNEL_FS,
+                    )
+                    clean = apply_channel(
+                        transmitted, profile;
+                        doppler_scales = scales, fc = SYNTHETIC_CHANNEL_FC,
+                    )
+                    (; bits, transmitted, clean)
+                end for bits in payloads]
+                received = Dict(snr => [
+                    add_awgn(
+                        trial.clean, snr;
+                        rng = Xoshiro(10_000 + 100snr_id + trial_id),
+                    )
+                    for (trial_id, trial) in enumerate(trials)
+                ] for (snr_id, snr) in enumerate(snrs))
+
+                @test all(length(trial.clean) ==
+                          length(trial.transmitted) + length(profile.taps) - 1
+                          for trial in trials)
+                @test all(
+                    trial.clean[1:length(trial.transmitted)] !=
+                    trial.transmitted for trial in trials)
                 errors = Dict{Float64,Int}()
                 for snr in snrs
                     errors[snr] = 0
                     for (trial, waveform) in zip(trials, received[snr])
                         metrics, cfo = SyntheticChannelModulations.demodulate(
-                            public_receiver(descriptor), nbits, waveform,
+                            receiver, nbits, waveform,
                             SYNTHETIC_CHANNEL_FC, SYNTHETIC_CHANNEL_FS,
                         )
                         errors[snr] += count((metrics .> 0) .!= trial.bits)

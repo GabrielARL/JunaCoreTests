@@ -70,6 +70,37 @@ def history_cell(row: dict) -> str:
             '</summary><sub>' + details + '</sub></details>')
 
 
+def frame_history_cell(row: dict) -> str:
+    milliseconds = 1_000 * float(row["mean_decode_seconds_per_frame"])
+    effective_rate = float(row["effective_data_rate_bps"])
+    summary = (f"{value(row)} / {milliseconds:.2f} ms / "
+               f"{effective_rate:.1f} bit/s")
+    items = [
+        f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
+        f"requested pilot ratio: {float(row['pilot_ratio']):.2f}",
+        "requested split: "
+        f"inner={float(row['pilot_ratio']) / 2:g}, "
+        f"outer={float(row['pilot_ratio']) / 2:g}",
+        "actual combs: "
+        f"inner=1/{row['inner_pilot_spacing']}, "
+        f"outer=1/{row['outer_pilot_spacing']}",
+        f"code rate: {code_rate_label(row['code_rate'])}",
+        f"N: {row['nfft']}", f"CP: {row['cp']}",
+        f"frame geometry: {row['frame_blocks']} OFDM blocks/codeword",
+        f"modem rate: {row['modem_fs']} samples/s",
+        f"capture rate: {row['capture_fs']} samples/s",
+        f"frames: {row['frames']}", f"seed: {row['seed']}",
+        f"mean decode: {milliseconds:.2f} ms/frame",
+        f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
+        f"capture duration: {float(row['capture_duration_seconds']):.3f} s",
+        f"covered duration: {float(row['covered_duration_seconds']):.3f} s",
+        f"effective data rate: {effective_rate:.1f} bit/s",
+    ]
+    details = "<br>".join(html.escape(item) for item in items)
+    return ('<details class="frame-cell-details"><summary>' + summary +
+            '</summary><sub>' + details + '</sub></details>')
+
+
 def code_rate_label(value: str) -> str:
     number = float(value)
     for expected, label in CODE_RATES:
@@ -198,10 +229,113 @@ def commit_history_table(history: list[dict]) -> list[str]:
     return lines
 
 
+def frame_commit_history_table(history: list[dict]) -> list[str]:
+    grouped = {}
+    commits = []
+    for row in history:
+        commit = row["juna_core_commit"]
+        if commit not in commits:
+            commits.append(commit)
+        rate = float(row["code_rate"])
+        pilot_ratio = float(row["pilot_ratio"])
+        nfft = int(row["nfft"])
+        code_rate_label(row["code_rate"])
+        if pilot_ratio not in PILOT_RATIOS:
+            raise ValueError(
+                f"unsupported frame-history pilot ratio: {pilot_ratio}")
+        if nfft not in FFT_SIZES:
+            raise ValueError(f"unsupported frame-history FFT size: {nfft}")
+        results = grouped.setdefault((commit, pilot_ratio, rate, nfft), {})
+        if row["algorithm"] in results:
+            raise ValueError(
+                f"frame commit {commit[:7]} pilots {pilot_ratio} rate {rate} "
+                f"N={nfft} contains duplicate {row['algorithm']} results")
+        results[row["algorithm"]] = row
+
+    latest_commit = commits[-1]
+    latest_rows = [
+        row for row in history if row["juna_core_commit"] == latest_commit]
+    latest_best_psr = max(float(row["psr"]) for row in latest_rows)
+    latest_note = (
+        f"For the latest commit `{latest_commit[:7]}`, the best frame PSR is "
+        f"**{latest_best_psr:.3f}**. "
+    )
+    if latest_best_psr == 0:
+        latest_note += (
+            "No complete ten-block frame was payload-exact, so effective data "
+            "rate is also zero in every cell; BER remains the finer diagnostic."
+        )
+
+    lines = [
+        "This table repeats the same 36 SG-1 geometries and five receiver names "
+        "using true frame-level decoding. Here **10 OFDM blocks share one LDPC "
+        "codeword** and one cross-block parity graph, giving 180 measured cases "
+        "per commit. A frame succeeds only when its complete payload is exact. "
+        "Each receiver cell is **PSR / mean BER / mean decode time per frame / "
+        "effective data rate**; effective rate counts only successful full-frame "
+        "payloads over the 47-second capture.", "",
+        latest_note, "",
+        "| JunaCore commit | Pilot Ratio | code rate | N | " +
+        " | ".join(HEADERS) + " |",
+        "|---|---:|---:|---:|" + "---:|" * len(HEADERS),
+    ]
+    for commit in commits:
+        if len(commit) != 40:
+            raise ValueError(
+                f"JunaCore commit must be a full 40-character SHA: {commit}")
+        link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
+        for pilot_ratio in PILOT_RATIOS:
+            for rate, label in CODE_RATES:
+                for nfft in FFT_SIZES:
+                    results = grouped.get(
+                        (commit, pilot_ratio, rate, nfft), {})
+                    missing = sorted(set(ALGORITHMS) - set(results))
+                    extra = sorted(set(results) - set(ALGORITHMS))
+                    if missing or extra:
+                        raise ValueError(
+                            f"frame commit {commit[:7]} pilots "
+                            f"{pilot_ratio:.2f} rate {label} N={nfft} has "
+                            f"incomplete receiver results; missing={missing}, "
+                            f"extra={extra}")
+                    expected_spacing = {0.25: 8, 0.5: 4, 0.75: 3}[pilot_ratio]
+                    if any(
+                        row["channel"] != "red1" or
+                        float(row["snr_db"]) != 20 or
+                        int(row["frames"]) < 1 or
+                        int(row["frame_blocks"]) != 10 or
+                        int(row["cp"]) != 16 or
+                        int(row["nfft"]) != nfft or
+                        float(row["pilot_ratio"]) != pilot_ratio or
+                        int(row["outer_pilot_spacing"]) != expected_spacing or
+                        int(row["inner_pilot_spacing"]) != expected_spacing
+                        for row in results.values()
+                    ):
+                        raise ValueError(
+                            f"frame commit {commit[:7]} pilots "
+                            f"{pilot_ratio:.2f} rate {label} N={nfft} mixes "
+                            "benchmark configurations")
+                    if any(row["status"] != "ok" for row in results.values()):
+                        raise ValueError(
+                            f"frame commit {commit[:7]} pilots "
+                            f"{pilot_ratio:.2f} rate {label} N={nfft} contains "
+                            "a failed benchmark")
+
+                    cells = [
+                        frame_history_cell(results[algorithm])
+                        for algorithm in ALGORITHMS
+                    ]
+                    lines.append(
+                        f"| {link} | {pilot_ratio:.2f} | {label} | {nfft} | " +
+                        " | ".join(cells) + " |")
+    return lines
+
+
 def render(repo: Path) -> str:
     sweep = rows(repo / "reports" / "all_channels_snr_sweep.csv")
     configs = rows(repo / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv")
     history = rows(repo / "reports" / "sg1_20db_commit_history.csv")
+    frame_history = rows(
+        repo / "reports" / "sg1_20db_frame_commit_history.csv")
     by_key = {(row["channel"], int(float(row["snr_db"])), row["algorithm"]): row for row in sweep}
     required = {(config["channel"], snr, algorithm)
                 for config in configs for snr in SNRS for algorithm in ALGORITHMS}
@@ -211,6 +345,8 @@ def render(repo: Path) -> str:
 
     lines = [BEGIN, "## Commit-by-rate receiver performance", ""]
     lines += commit_history_table(history)
+    lines += ["", "## True frame-wide receiver performance", ""]
+    lines += frame_commit_history_table(frame_history)
     lines += [
         "",
         "## Measured-channel performance", "",
@@ -249,7 +385,9 @@ def render(repo: Path) -> str:
               "(reports/paper_frame_wide_all_channels_stateful_full_20db.csv) and "
               "[`reports/all_channels_snr_sweep.csv`](reports/all_channels_snr_sweep.csv). "
               "Commit history: [`reports/sg1_20db_commit_history.csv`]"
-              "(reports/sg1_20db_commit_history.csv).",
+              "(reports/sg1_20db_commit_history.csv). Frame history: "
+              "[`reports/sg1_20db_frame_commit_history.csv`]"
+              "(reports/sg1_20db_frame_commit_history.csv).",
               END]
     return "\n".join(lines)
 

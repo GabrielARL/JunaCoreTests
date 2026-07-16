@@ -14,8 +14,10 @@ using .ReplayCoupledSegment: ReplayCapture, align_to_reference, apply_capture,
 const Juna = JunaCore.Juna
 const Modulations = JunaCore.Modulations
 
-export ALGORITHM_DESCRIPTORS, CHANNEL_DESCRIPTORS, RESULT_COLUMNS,
-       algorithm_descriptors, benchmark_capture, channel_descriptors,
+export ALGORITHM_DESCRIPTORS, FRAME_ALGORITHM_DESCRIPTORS,
+       CHANNEL_DESCRIPTORS, RESULT_COLUMNS,
+       algorithm_descriptors, frame_algorithm_descriptors,
+       benchmark_capture, benchmark_frame_capture, channel_descriptors,
        identity_capture, modem_profile_descriptors, run_benchmark,
        run_benchmark_sweep, select_algorithms, select_channels,
        select_modem_profile, validate_report_rows, write_benchmark_csv,
@@ -34,6 +36,14 @@ const ALGORITHM_DESCRIPTORS = (
     (id=:lite, name="JUNA-Lite", profile=:lite, factory=Juna.LiteModulation),
     (id=:wz, name="JUNA-Wz", profile=:full, factory=Juna.FullModulation),
     (id=:wcz, name="JUNA-WCz", profile=:coupled, factory=Juna.CoupledModulation),
+)
+
+const FRAME_ALGORITHM_DESCRIPTORS = (
+    (id=:standard, name="Standard OFDM", profile=:standard),
+    (id=:pfft, name="Partial FFT+FEC", profile=:pfft),
+    (id=:lite, name="JUNA-Lite", profile=:lite),
+    (id=:wz, name="JUNA-Wz", profile=:full),
+    (id=:wcz, name="JUNA-WCz", profile=:coupled),
 )
 
 const MODEM_PROFILE_DESCRIPTORS = (
@@ -190,6 +200,7 @@ const RESULT_COLUMNS = (
 )
 
 algorithm_descriptors() = ALGORITHM_DESCRIPTORS
+frame_algorithm_descriptors() = FRAME_ALGORITHM_DESCRIPTORS
 channel_descriptors() = CHANNEL_DESCRIPTORS
 modem_profile_descriptors() = MODEM_PROFILE_DESCRIPTORS
 paper_frame_wide_config_descriptors() = PAPER_FRAME_WIDE_CONFIG_DESCRIPTORS
@@ -671,9 +682,51 @@ function _receiver_set(algorithms, fc::Real, fs::Real;
     receivers, only(payload_sizes)
 end
 
+function _frame_receiver_set(algorithms, fc::Real, fs::Real;
+                             frame_blocks::Integer,
+                             modem_profile=:default,
+                             nfft=nothing,
+                             cp=nothing,
+                             code_rate=nothing,
+                             pilot_ratio=nothing)
+    blocks = Int(frame_blocks)
+    blocks > 0 || throw(ArgumentError("frame block count must be positive"))
+    receivers = map(algorithms) do descriptor
+        receiver = _configure_modem!(
+            Juna.FrameWideLDPCModulation(
+                frame_receiver=descriptor.profile),
+            fc,
+            fs,
+            modem_profile;
+            nfft=nfft,
+            cp=cp,
+            code_rate=code_rate,
+            pilot_ratio=pilot_ratio,
+        )
+        isvalid(receiver, fc, fs) || throw(ArgumentError(
+            "$(descriptor.name) frame receiver is invalid at fc=$fc, fs=$fs"))
+        (descriptor=descriptor, receiver=receiver)
+    end
+    payload_sizes = unique(
+        Juna._frame_payload_capacity(item.receiver, blocks)
+        for item in receivers
+    )
+    length(payload_sizes) == 1 || throw(ArgumentError(
+        "selected frame receivers do not share one payload geometry"))
+    receivers, only(payload_sizes)
+end
+
 function _warm_receivers!(receivers, waveform, payload_bits, fc, fs)
     for item in receivers
         Modulations.demodulate(item.receiver, payload_bits, waveform, fc, fs)
+    end
+    nothing
+end
+
+function _warm_frame_receivers!(receivers, waveform, payload_bits, fc, fs)
+    for item in receivers
+        Modulations.demodulate(
+            item.receiver, payload_bits, waveform, fc, fs)
     end
     nothing
 end
@@ -835,6 +888,177 @@ function benchmark_capture(capture::ReplayCapture;
             mean_decode_seconds=timing.mean,
             median_decode_seconds=timing.median,
             p95_decode_seconds=timing.p95,
+            total_decode_seconds=timing.total,
+            snr_db=Float64(snr_db),
+            seed=Int(seed),
+            status=status,
+        )
+    end
+end
+
+"""
+    benchmark_frame_capture(capture; ...)
+
+Compare the five receiver algorithms with one LDPC codeword and one BP graph
+spanning `frame_blocks` OFDM blocks. A frame succeeds only when every payload
+bit in that complete frame is recovered exactly. Decode timing contains one
+public frame-wide `demodulate` call.
+"""
+function benchmark_frame_capture(capture::ReplayCapture;
+                                 channel_id::AbstractString=capture.name,
+                                 frames::Integer=1,
+                                 frame_blocks::Integer=10,
+                                 algorithms=FRAME_ALGORITHM_DESCRIPTORS,
+                                 snr_db::Real=Inf,
+                                 seed::Integer=1,
+                                 modem_fs=nothing,
+                                 modem_profile=:default,
+                                 nfft=nothing,
+                                 cp=nothing,
+                                 code_rate=nothing,
+                                 pilot_ratio=nothing,
+                                 full_capture::Bool=false,
+                                 warmup::Bool=true)
+    full_capture && frames != 1 && throw(ArgumentError(
+        "full-capture frame benchmark derives its frame count; leave frames=1"))
+    blocks = Int(frame_blocks)
+    blocks > 0 || throw(ArgumentError("frame block count must be positive"))
+    blocks <= 100 || throw(ArgumentError(
+        "frame block count must not exceed 100"))
+    _validate_benchmark(full_capture ? 1 : frames, snr_db, seed)
+    isempty(algorithms) && throw(ArgumentError(
+        "select at least one frame algorithm"))
+    fs = _resolve_modem_fs(capture, modem_fs)
+    fc = capture.fc
+    profile = select_modem_profile(modem_profile)
+    profile.id === :default || throw(ArgumentError(
+        "true frame benchmark currently requires the default modem profile"))
+
+    receivers, payload_per_frame = _frame_receiver_set(
+        algorithms,
+        fc,
+        fs;
+        frame_blocks=blocks,
+        modem_profile=profile.id,
+        nfft=nfft,
+        cp=cp,
+        code_rate=code_rate,
+        pilot_ratio=pilot_ratio,
+    )
+    transmitter = _configure_modem!(
+        Juna.FrameWideLDPCModulation(frame_receiver=:standard),
+        fc,
+        fs,
+        profile.id;
+        nfft=nfft,
+        cp=cp,
+        code_rate=code_rate,
+        pilot_ratio=pilot_ratio,
+    )
+    Juna._frame_payload_capacity(transmitter, blocks) == payload_per_frame ||
+        throw(ArgumentError(
+            "frame transmitter and receivers disagree on payload geometry"))
+
+    warm_payload = falses(payload_per_frame)
+    warm_waveform = Modulations.modulate(
+        transmitter, warm_payload, fc, fs)
+    for item in receivers
+        item.receiver.code = transmitter.code
+        item.receiver.layout = transmitter.layout
+        item.receiver.bp_scratch = nothing
+    end
+    warmup && _warm_frame_receivers!(
+        receivers, warm_waveform, payload_per_frame, fc, fs)
+
+    snapshots = full_capture ?
+        _full_capture_positions(capture, length(warm_waveform), fs) :
+        _snapshot_positions(
+            capture, frames, length(warm_waveform), fs)
+    frame_count = length(snapshots)
+    successful = zeros(Int, length(receivers))
+    bit_errors = zeros(Int, length(receivers))
+    failures = zeros(Int, length(receivers))
+    decode_samples = [Float64[] for _ in receivers]
+    errors = fill("", length(receivers))
+
+    for frame in 1:frame_count
+        rng = MersenneTwister(Int(seed) + frame - 1)
+        payload = rand(rng, Bool, payload_per_frame)
+        transmitted = Modulations.modulate(
+            transmitter, payload, fc, fs)
+        replayed = replay_at_modem_rate(
+            capture,
+            transmitted;
+            snapshot=snapshots[frame],
+            modem_fs=fs,
+        )
+        noisy = _add_awgn(replayed, snr_db, rng)
+        received = align_to_reference(
+            noisy,
+            transmitted;
+            max_lag=length(noisy) - length(transmitted),
+        ).waveform
+
+        for (index, item) in pairs(receivers)
+            started = time_ns()
+            try
+                metrics, _ = Modulations.demodulate(
+                    item.receiver,
+                    payload_per_frame,
+                    received,
+                    fc,
+                    fs,
+                )
+                length(metrics) == payload_per_frame ||
+                    throw(DimensionMismatch(
+                        "frame decoder returned $(length(metrics)) metrics"))
+                frame_errors = count((metrics .> 0) .!= payload)
+                bit_errors[index] += frame_errors
+                successful[index] += iszero(frame_errors)
+            catch exception
+                failures[index] += 1
+                bit_errors[index] += payload_per_frame
+                isempty(errors[index]) &&
+                    (errors[index] = sprint(
+                        showerror, exception; context=:compact => true))
+            finally
+                push!(decode_samples[index],
+                      (time_ns() - started) / 1e9)
+            end
+        end
+    end
+
+    attempted_bits = frame_count * payload_per_frame
+    color = _channel_color(String(channel_id))
+    map(eachindex(receivers)) do index
+        descriptor = receivers[index].descriptor
+        timing = _timing_summary(decode_samples[index])
+        psr_interval = _wilson_interval(
+            successful[index], frame_count)
+        status = failures[index] == 0 ? "ok" :
+                 "$(failures[index]) frame decode failure(s): $(errors[index])"
+        (
+            channel=String(channel_id),
+            color=color,
+            algorithm=descriptor.name,
+            profile=String(descriptor.profile),
+            modem_profile=String(profile.id),
+            receiver=capture.receiver,
+            modem_fs=fs,
+            capture_fs=capture.fs,
+            frames=frame_count,
+            frame_blocks=blocks,
+            successful_frames=successful[index],
+            psr=successful[index] / frame_count,
+            psr_ci95_low=psr_interval[1],
+            psr_ci95_high=psr_interval[2],
+            payload_bits=attempted_bits,
+            bit_errors=bit_errors[index],
+            ber=bit_errors[index] / attempted_bits,
+            decode_failures=failures[index],
+            mean_decode_seconds_per_frame=timing.mean,
+            median_decode_seconds_per_frame=timing.median,
+            p95_decode_seconds_per_frame=timing.p95,
             total_decode_seconds=timing.total,
             snr_db=Float64(snr_db),
             seed=Int(seed),

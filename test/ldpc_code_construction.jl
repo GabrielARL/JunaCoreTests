@@ -110,7 +110,7 @@ end
         @test code.n == 1360
         @test code.npc == 3
         @test code.method == "evencol"
-        @test code.H isa Matrix{Bool}
+        @test code.H isa BitMatrix
         @test code.gen isa BitMatrix
         @test size(code.H) == (1020, 1360)
         @test size(code.gen) == (1020, 340)

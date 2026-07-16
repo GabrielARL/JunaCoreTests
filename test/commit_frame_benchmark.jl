@@ -1,0 +1,111 @@
+#!/usr/bin/env julia
+
+using Test
+
+isdefined(Main, :ReceiverChannelBenchmark) ||
+    include(joinpath(@__DIR__, "..", "tools", "receiver_channel_benchmark.jl"))
+const FrameCommitBenchmark = Main.ReceiverChannelBenchmark
+
+@testset verbose = true "commit benchmark true frame-wide matrix" begin
+    capture = FrameCommitBenchmark.identity_capture(
+        fs=19_200.0,
+        fc=25_000.0,
+        receiver=3,
+    )
+    coded_bits_by_pilot_and_n = Dict(
+        (0.25, 512) => 880,
+        (0.25, 1024) => 1776,
+        (0.25, 2048) => 3568,
+        (0.5, 512) => 752,
+        (0.5, 1024) => 1520,
+        (0.5, 2048) => 3056,
+        (0.75, 512) => 672,
+        (0.75, 1024) => 1360,
+        (0.75, 2048) => 2720,
+    )
+    pilot_spacings = (0.25 => 8, 0.5 => 4, 0.75 => 3)
+    code_rates = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
+    frame_blocks = 10
+    expected_profiles = (:standard, :pfft, :lite, :full, :coupled)
+
+    @testset "all 180 cells have a valid ten-block global geometry" begin
+        for (pilot_ratio, spacing) in pilot_spacings,
+            nfft in (512, 1024, 2048),
+            code_rate in code_rates
+            coded_bits = coded_bits_by_pilot_and_n[(pilot_ratio, nfft)]
+            information_bits = round(Int, code_rate * coded_bits)
+            frame_payload = frame_blocks * information_bits -
+                            cld(frame_blocks * information_bits, spacing)
+            receivers, shared_payload =
+                FrameCommitBenchmark._frame_receiver_set(
+                    FrameCommitBenchmark.frame_algorithm_descriptors(),
+                    capture.fc,
+                    capture.fs;
+                    frame_blocks=frame_blocks,
+                    modem_profile=:default,
+                    nfft=nfft,
+                    cp=16,
+                    code_rate=code_rate,
+                    pilot_ratio=pilot_ratio,
+                )
+
+            @test shared_payload == frame_payload
+            @test Tuple(item.receiver.frame_receiver for item in receivers) ==
+                  expected_profiles
+            for item in receivers
+                @test Int(item.receiver.nc) == nfft
+                @test Int(item.receiver.np) == 16
+                @test Int(item.receiver.ldpc_n) == coded_bits
+                @test Int(item.receiver.ldpc_k) == information_bits
+                @test FrameCommitBenchmark.Juna._frame_payload_capacity(
+                    item.receiver, frame_blocks) == frame_payload
+                @test isvalid(item.receiver, capture.fc, capture.fs)
+            end
+        end
+    end
+
+    @testset "one ten-block frame decodes through all five global receivers" begin
+        rows = FrameCommitBenchmark.benchmark_frame_capture(
+            capture;
+            channel_id="identity",
+            frames=1,
+            frame_blocks=10,
+            algorithms=FrameCommitBenchmark.frame_algorithm_descriptors(),
+            snr_db=Inf,
+            seed=1,
+            modem_fs=:capture,
+            modem_profile=:default,
+            nfft=512,
+            cp=16,
+            code_rate=1 / 16,
+            pilot_ratio=0.75,
+            warmup=false,
+        )
+
+        @test length(rows) == 5
+        @test Set(row.algorithm for row in rows) ==
+              Set(descriptor.name for descriptor in
+                  FrameCommitBenchmark.frame_algorithm_descriptors())
+        for row in rows
+            @test row.frames == 1
+            @test row.frame_blocks == 10
+            @test row.successful_frames == 1
+            @test row.psr == 1.0
+            @test row.bit_errors == 0
+            @test row.ber == 0.0
+            @test row.decode_failures == 0
+            @test row.mean_decode_seconds_per_frame ==
+                  row.total_decode_seconds
+            @test row.status == "ok"
+        end
+    end
+
+    @test_throws ArgumentError FrameCommitBenchmark.benchmark_frame_capture(
+        capture; frames=1, frame_blocks=0, warmup=false)
+    @test_throws ArgumentError FrameCommitBenchmark.benchmark_frame_capture(
+        capture; frames=0, frame_blocks=10, warmup=false)
+    @test_throws ArgumentError FrameCommitBenchmark.benchmark_frame_capture(
+        capture; frames=2, frame_blocks=10, full_capture=true, warmup=false)
+end
+
+println("commit frame-wide benchmark checks passed")

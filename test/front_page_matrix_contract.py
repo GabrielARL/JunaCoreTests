@@ -13,6 +13,7 @@ RANKING_GENERATOR = ROOT / "tools" / "generate_sg1_rankings.py"
 SWEEP = ROOT / "reports" / "all_channels_snr_sweep.csv"
 FRAME_WIDE = ROOT / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv"
 HISTORY = ROOT / "reports" / "sg1_20db_commit_history.csv"
+FRAME_HISTORY = ROOT / "reports" / "sg1_20db_frame_commit_history.csv"
 RANKINGS = {
     "psr": ROOT / "reports" / "sg1_20db_ranked_by_psr.md",
     "ber": ROOT / "reports" / "sg1_20db_ranked_by_ber.md",
@@ -60,6 +61,8 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("| SG-1 | `red1` | 360/360 | **1.000** | 0 |", text)
         self.assertIn("## Commit-by-rate receiver performance", text)
         self.assertLess(text.index("Commit-by-rate receiver performance"),
+                        text.index("True frame-wide receiver performance"))
+        self.assertLess(text.index("True frame-wide receiver performance"),
                         text.index("Frame-wide LDPC vs paper target"))
         self.assertIn("not directly comparable", text)
         self.assertIn("modem rate equals the capture rate", text)
@@ -72,6 +75,15 @@ class FrontPageMatrixContract(unittest.TestCase):
         for nfft in ("512", "1024", "2048"):
             self.assertIn(f"| 0.25 | 1/16 | {nfft} |", text)
         self.assertIn("180 measured cases", text)
+        self.assertIn("## True frame-wide receiver performance", text)
+        self.assertIn("10 OFDM blocks share one LDPC codeword", text)
+        self.assertIn("PSR / mean BER / mean decode time per frame / effective data rate", text)
+        self.assertEqual(
+            text.count("| JunaCore commit | Pilot Ratio | code rate | N | "
+                       "Standard OFDM | Partial FFT + FEC | JUNA-Lite | "
+                       "JUNA-Wz | JUNA-WCz |"),
+            2,
+        )
         self.assertIn(
             "[highest PSR](reports/sg1_20db_ranked_by_psr.md)", text)
         self.assertIn(
@@ -100,7 +112,12 @@ class FrontPageMatrixContract(unittest.TestCase):
             self.assertIn(f"| {site} |", text)
         with HISTORY.open(encoding="utf-8") as stream:
             history_count = sum(1 for _ in csv.DictReader(stream))
-        self.assertEqual(text.count('<details class="cell-details">'), history_count)
+        with FRAME_HISTORY.open(encoding="utf-8") as stream:
+            frame_history_count = sum(1 for _ in csv.DictReader(stream))
+        self.assertEqual(text.count('<details class="cell-details">'),
+                         history_count)
+        self.assertEqual(text.count('<details class="frame-cell-details">'),
+                         frame_history_count)
         self.assertEqual(text.count("Click a cell to reveal"), 1)
         self.assertNotIn("<abbr title=", text)
         self.assertIn("N: 1024<br>CP: 16", text)
@@ -109,6 +126,8 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("actual combs: inner=1/8, outer=1/8", text)
         self.assertIn("modem rate: 19200", text)
         self.assertIn("mean decode:", text)
+        self.assertIn("mean decode: ", text)
+        self.assertIn("ms/frame", text)
         self.assertIn("paper target rate", text)
         self.assertIn("ΔPSR", text)
 
@@ -257,6 +276,37 @@ class FrontPageMatrixContract(unittest.TestCase):
                                 int(row["successful_blocks"]) * payload_per_block /
                                 float(row["capture_duration_seconds"]),
                             )
+
+        with FRAME_HISTORY.open(encoding="utf-8") as stream:
+            frame_history = list(csv.DictReader(stream))
+        self.assertEqual(len(frame_history), 180)
+        self.assertEqual({row["frame_blocks"] for row in frame_history}, {"10"})
+        self.assertEqual({row["pilot_ratio"] for row in frame_history},
+                         {"0.25", "0.5", "0.75"})
+        self.assertEqual({row["code_rate"] for row in frame_history},
+                         {"0.0625", "0.125", "0.25", "0.5"})
+        self.assertEqual({row["nfft"] for row in frame_history},
+                         {"512", "1024", "2048"})
+        self.assertEqual({row["algorithm"] for row in frame_history},
+                         algorithms)
+        self.assertTrue(all(row["status"] == "ok" for row in frame_history))
+        for row in frame_history:
+            self.assertAlmostEqual(
+                float(row["psr"]),
+                int(row["successful_frames"]) / int(row["frames"]),
+            )
+            self.assertAlmostEqual(
+                float(row["ber"]),
+                int(row["bit_errors"]) / int(row["payload_bits"]),
+            )
+            payload_per_frame = (
+                int(row["payload_bits"]) / int(row["frames"])
+            )
+            self.assertAlmostEqual(
+                float(row["effective_data_rate_bps"]),
+                int(row["successful_frames"]) * payload_per_frame /
+                float(row["capture_duration_seconds"]),
+            )
 
 
 if __name__ == "__main__":

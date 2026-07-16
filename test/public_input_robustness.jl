@@ -158,22 +158,23 @@ end
 
     @testset "gain, DC offset, and finite trailing samples preserve payload" begin
         bits = input_robustness_payload(127)
-        tx = InputRobustnessJuna.LiteModulation()
-        waveform = InputRobustnessModulations.modulate(
-            tx, bits, INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
-        variants = (
-            (name = "gain 1e-6", waveform = 1e-6 .* waveform),
-            (name = "gain 1e6", waveform = 1e6 .* waveform),
-            (name = "constant DC offset", waveform = waveform .+ ComplexF64(0.2, -0.1)),
-            (name = "finite trailing samples",
-             waveform = vcat(waveform, ComplexF64[3 + 4im, -2 + 0.5im])),
-        )
-
         for descriptor in public_receiver_descriptors()
+            receiver = public_receiver(descriptor)
+            waveform = InputRobustnessModulations.modulate(
+                receiver, bits, INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
+            variants = (
+                (name = "gain 1e-6", waveform = 1e-6 .* waveform),
+                (name = "gain 1e6", waveform = 1e6 .* waveform),
+                (name = "constant DC offset",
+                 waveform = waveform .+ ComplexF64(0.2, -0.1)),
+                (name = "finite trailing samples",
+                 waveform = vcat(
+                     waveform, ComplexF64[3 + 4im, -2 + 0.5im])),
+            )
             for variant in variants
                 @testset "$(descriptor.name): $(variant.name)" begin
                     metrics, cfo = InputRobustnessModulations.demodulate(
-                        public_receiver(descriptor), length(bits), variant.waveform,
+                        receiver, length(bits), variant.waveform,
                         INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
                     @test all(isfinite, metrics)
                     @test (metrics .> 0) == bits

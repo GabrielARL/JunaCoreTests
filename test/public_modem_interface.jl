@@ -83,6 +83,35 @@ function direct_payload_metrics(m, code, candidate, nbits::Integer)
     metrics
 end
 
+function direct_frame_paths(m, waveform, nbits::Integer)
+    blocks = PublicInterfaceJuna._frame_nblocks(m, nbits)
+    code = PublicInterfaceJuna._frame_code(m, blocks)
+    layout = PublicInterfaceJuna._layout(m, PUBLIC_INTERFACE_FS)
+    observations = Array{ComplexF64}(
+        undef, m.partial_fft_parts, Int(m.nc), blocks)
+    block_length = Int(m.nc) + Int(m.np)
+    for block in 1:blocks
+        lo = 1 + (block - 1) * block_length
+        hi = block * block_length
+        observations[:, :, block] .=
+            PublicInterfaceJuna._branch_observations(
+                m, @view waveform[lo:hi])
+    end
+    standard = PublicInterfaceJuna._frame_static_trace(
+        m, code, layout, observations, :standard).best
+    partial = PublicInterfaceJuna._frame_static_trace(
+        m, code, layout, observations, :pfft).best
+    juna = PublicInterfaceJuna._frame_receiver_trace(
+        m, code, layout, observations).best
+    payload(candidate) = PublicInterfaceJuna._frame_payload_metrics(
+        m, code, candidate.lpost_metric, blocks, nbits)
+    (
+        standard=payload(standard),
+        partial=payload(partial),
+        juna=payload(juna),
+    )
+end
+
 @testset verbose = true "JUNA public modem interface" begin
     m = PublicInterfaceJuna.LiteModulation()
 
@@ -225,8 +254,13 @@ end
         for descriptor in public_receiver_descriptors()
             @testset "$(descriptor.name)" begin
                 compared = public_receiver(descriptor)
+                tested_waveform = descriptor.profile === :frame_wide_ldpc ?
+                    PublicInterfaceModulations.modulate(
+                        compared, payload,
+                        PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS) :
+                    waveform
                 paths = PublicInterfaceJuna.demodulate_methods(
-                    compared, length(payload), waveform,
+                    compared, length(payload), tested_waveform,
                     PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS)
                 @test keys(paths) == (:standard, :partial, :juna)
                 for metrics in values(paths)
@@ -239,29 +273,58 @@ end
                 @test paths.partial !== paths.juna
 
                 public_metrics, _ = PublicInterfaceModulations.demodulate(
-                    compared, length(payload), waveform,
+                    compared, length(payload), tested_waveform,
                     PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS)
                 @test paths.juna == public_metrics
 
+                tested_distorted = if descriptor.profile === :frame_wide_ldpc
+                    copy(tested_waveform)
+                else
+                    distorted
+                end
+                if descriptor.profile === :frame_wide_ldpc
+                    for p in 1:Int(compared.partial_fft_parts)
+                        lo, hi = PublicInterfaceJuna._part_bounds(
+                            Int(compared.nc),
+                            Int(compared.partial_fft_parts),
+                            p,
+                        )
+                        first_sample = Int(compared.np) + lo
+                        last_sample = Int(compared.np) + hi
+                        @views tested_distorted[first_sample:last_sample] .*= gains[p]
+                    end
+                end
                 distorted_paths = PublicInterfaceJuna.demodulate_methods(
-                    compared, length(payload), distorted,
+                    compared, length(payload), tested_distorted,
                     PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS)
-                code = PublicInterfaceJuna._code(compared)
-                layout = PublicInterfaceJuna._layout(compared, PUBLIC_INTERFACE_FS)
-                yparts = PublicInterfaceJuna._branch_observations(compared, distorted)
-                standard_candidate = PublicInterfaceJuna._standard_candidate(
-                    compared, code, layout, yparts)
-                partial_candidate = PublicInterfaceJuna._seed_candidate(
-                    compared, code, layout, yparts)
-                juna_candidate = PublicInterfaceJuna._juna_candidate(
-                    compared, code, layout, yparts, partial_candidate)
+                direct_paths = if descriptor.profile === :frame_wide_ldpc
+                    direct_frame_paths(
+                        compared, tested_distorted, length(payload))
+                else
+                    code = PublicInterfaceJuna._code(compared)
+                    layout = PublicInterfaceJuna._layout(
+                        compared, PUBLIC_INTERFACE_FS)
+                    yparts = PublicInterfaceJuna._branch_observations(
+                        compared, tested_distorted)
+                    standard_candidate = PublicInterfaceJuna._standard_candidate(
+                        compared, code, layout, yparts)
+                    partial_candidate = PublicInterfaceJuna._seed_candidate(
+                        compared, code, layout, yparts)
+                    juna_candidate = PublicInterfaceJuna._juna_candidate(
+                        compared, code, layout, yparts, partial_candidate)
+                    (
+                        standard=direct_payload_metrics(
+                            compared, code, standard_candidate, length(payload)),
+                        partial=direct_payload_metrics(
+                            compared, code, partial_candidate, length(payload)),
+                        juna=direct_payload_metrics(
+                            compared, code, juna_candidate, length(payload)),
+                    )
+                end
 
-                @test distorted_paths.standard == direct_payload_metrics(
-                    compared, code, standard_candidate, length(payload))
-                @test distorted_paths.partial == direct_payload_metrics(
-                    compared, code, partial_candidate, length(payload))
-                @test distorted_paths.juna == direct_payload_metrics(
-                    compared, code, juna_candidate, length(payload))
+                @test distorted_paths.standard == direct_paths.standard
+                @test distorted_paths.partial == direct_paths.partial
+                @test distorted_paths.juna == direct_paths.juna
                 @test count((distorted_paths.standard .> 0) .!= payload) > 0
                 @test (distorted_paths.partial .> 0) == payload
                 if descriptor.profile === :standard
