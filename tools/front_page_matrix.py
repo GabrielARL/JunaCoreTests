@@ -143,6 +143,11 @@ def commit_history_table(history: list[dict]) -> list[str]:
         "PSR is the fraction of payload-exact blocks; effective rate counts only "
         "successful payload blocks over the full capture duration. Click a cell to "
         "reveal the geometry, coverage, payload size, and bit errors.", "",
+        "GitHub README tables are static. Rank all receiver cells using "
+        "[highest PSR](reports/sg1_20db_ranked_by_psr.md), "
+        "[lowest BER](reports/sg1_20db_ranked_by_ber.md), "
+        "[highest effective rate](reports/sg1_20db_ranked_by_rate.md), or "
+        "[fastest decode](reports/sg1_20db_ranked_by_time.md).", "",
         "| JunaCore commit | Pilot Ratio | code rate | N | " +
         " | ".join(HEADERS) + " |",
         "|---|---:|---:|---:|" + "---:|" * len(HEADERS),

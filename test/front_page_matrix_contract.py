@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import re
 import subprocess
 import sys
 import tempfile
@@ -8,12 +9,40 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = ROOT / "tools" / "front_page_matrix.py"
+RANKING_GENERATOR = ROOT / "tools" / "generate_sg1_rankings.py"
 SWEEP = ROOT / "reports" / "all_channels_snr_sweep.csv"
 FRAME_WIDE = ROOT / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv"
 HISTORY = ROOT / "reports" / "sg1_20db_commit_history.csv"
+RANKINGS = {
+    "psr": ROOT / "reports" / "sg1_20db_ranked_by_psr.md",
+    "ber": ROOT / "reports" / "sg1_20db_ranked_by_ber.md",
+    "rate": ROOT / "reports" / "sg1_20db_ranked_by_rate.md",
+    "time": ROOT / "reports" / "sg1_20db_ranked_by_time.md",
+}
 RECEIVERS = ["Standard OFDM", "Partial FFT + FEC", "JUNA-Lite", "JUNA-Wz", "JUNA-WCz"]
 SITES = ["SG-1", "SG-2", "SG-3", "NA-1", "NA-2", "NA-3",
          "HW-1", "HW-2", "HW-3", "HW-4", "HW-5", "HW-6"]
+
+
+def ranked_rows(path):
+    result = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not re.match(r"^\| \d+ \|", line):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        result.append({
+            "rank": int(cells[0]),
+            "commit": cells[1],
+            "pilot_ratio": cells[2],
+            "code_rate": cells[3],
+            "nfft": cells[4],
+            "algorithm": cells[5],
+            "psr": float(cells[6]),
+            "ber": float(cells[7]),
+            "time_ms": float(cells[8]),
+            "rate_bps": float(cells[9]),
+        })
+    return result
 
 
 class FrontPageMatrixContract(unittest.TestCase):
@@ -43,6 +72,16 @@ class FrontPageMatrixContract(unittest.TestCase):
         for nfft in ("512", "1024", "2048"):
             self.assertIn(f"| 0.25 | 1/16 | {nfft} |", text)
         self.assertIn("180 measured cases", text)
+        self.assertIn(
+            "[highest PSR](reports/sg1_20db_ranked_by_psr.md)", text)
+        self.assertIn(
+            "[lowest BER](reports/sg1_20db_ranked_by_ber.md)", text)
+        self.assertIn(
+            "[highest effective rate](reports/sg1_20db_ranked_by_rate.md)",
+            text,
+        )
+        self.assertIn(
+            "[fastest decode](reports/sg1_20db_ranked_by_time.md)", text)
         self.assertIn("split equally between inner and outer pilots", text)
         self.assertIn("snap to realizable 1/k comb spacings", text)
         self.assertIn("full 47-second SG-1 capture", text)
@@ -72,6 +111,70 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("mean decode:", text)
         self.assertIn("paper target rate", text)
         self.assertIn("ΔPSR", text)
+
+    def test_ranked_views_are_complete_and_monotonic(self):
+        self.assertTrue(RANKING_GENERATOR.is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(RANKING_GENERATOR),
+                    "--repo",
+                    str(ROOT),
+                    "--out-dir",
+                    directory,
+                ],
+                check=True,
+            )
+            generated = {
+                metric: Path(directory) / path.name
+                for metric, path in RANKINGS.items()
+            }
+            for metric, committed in RANKINGS.items():
+                self.assertTrue(committed.is_file())
+                self.assertEqual(
+                    generated[metric].read_text(encoding="utf-8"),
+                    committed.read_text(encoding="utf-8"),
+                )
+
+        parsed = {metric: ranked_rows(path)
+                  for metric, path in RANKINGS.items()}
+        for rows in parsed.values():
+            self.assertEqual(len(rows), 180)
+            self.assertEqual([row["rank"] for row in rows],
+                             list(range(1, 181)))
+
+        def identities(rows):
+            return {
+                (
+                    row["commit"], row["pilot_ratio"], row["code_rate"],
+                    row["nfft"], row["algorithm"],
+                )
+                for row in rows
+            }
+
+        expected_identities = identities(parsed["psr"])
+        self.assertEqual(len(expected_identities), 180)
+        for rows in parsed.values():
+            self.assertEqual(identities(rows), expected_identities)
+
+        self.assertEqual(
+            [row["psr"] for row in parsed["psr"]],
+            sorted((row["psr"] for row in parsed["psr"]), reverse=True),
+        )
+        self.assertEqual(
+            [row["ber"] for row in parsed["ber"]],
+            sorted(row["ber"] for row in parsed["ber"]),
+        )
+        self.assertEqual(
+            [row["rate_bps"] for row in parsed["rate"]],
+            sorted(
+                (row["rate_bps"] for row in parsed["rate"]), reverse=True),
+        )
+        self.assertEqual(
+            [row["time_ms"] for row in parsed["time"]],
+            sorted(row["time_ms"] for row in parsed["time"]),
+        )
 
     def test_sources_have_complete_frame_wide_and_20db_matrices(self):
         with SWEEP.open(encoding="utf-8") as stream:
