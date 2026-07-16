@@ -11,3 +11,4 @@ jobs:
       - uses: julia-actions/cache@v2
       - run: julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/GabrielARL/JunaCore.jl"); Pkg.instantiate()'
       - run: julia --project=. test/runtests.jl contract
+      - run: python3 test/front_page_matrix_contract.py
