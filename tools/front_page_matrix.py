@@ -19,6 +19,7 @@ CODE_RATES = (
     (0.5, "1/2"),
 )
 FFT_SIZES = (512, 1024, 2048)
+PILOT_RATIOS = (0.25, 0.5, 0.75)
 
 
 def rows(path: Path) -> list[dict]:
@@ -46,6 +47,13 @@ def history_cell(row: dict) -> str:
                f"{effective_rate:.1f} bit/s")
     items = [
         f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
+        f"requested pilot ratio: {float(row['pilot_ratio']):.2f}",
+        "requested split: "
+        f"inner={float(row['pilot_ratio']) / 2:g}, "
+        f"outer={float(row['pilot_ratio']) / 2:g}",
+        "actual combs: "
+        f"inner=1/{row['inner_pilot_spacing']}, "
+        f"outer=1/{row['outer_pilot_spacing']}",
         f"code rate: {code_rate_label(row['code_rate'])}",
         f"N: {row['nfft']}", f"CP: {row['cp']}",
         f"modem rate: {row['modem_fs']} samples/s",
@@ -106,58 +114,82 @@ def commit_history_table(history: list[dict]) -> list[str]:
         if commit not in commits:
             commits.append(commit)
         rate = float(row["code_rate"])
+        pilot_ratio = float(row["pilot_ratio"])
         nfft = int(row["nfft"])
         code_rate_label(row["code_rate"])
+        if pilot_ratio not in PILOT_RATIOS:
+            raise ValueError(
+                f"unsupported commit-history pilot ratio: {pilot_ratio}")
         if nfft not in FFT_SIZES:
             raise ValueError(f"unsupported commit-history FFT size: {nfft}")
-        results = grouped.setdefault((commit, rate, nfft), {})
+        results = grouped.setdefault((commit, pilot_ratio, rate, nfft), {})
         if row["algorithm"] in results:
             raise ValueError(
-                f"commit {commit[:7]} rate {rate} N={nfft} contains duplicate "
+                f"commit {commit[:7]} pilots {pilot_ratio} rate {rate} "
+                f"N={nfft} contains duplicate "
                 f"{row['algorithm']} results")
         results[row["algorithm"]] = row
 
     lines = [
         "This main comparison runs each configuration through the full 47-second "
         "SG-1 capture at 20 dB with seed 1. Each commit therefore records "
-        f"{len(FFT_SIZES) * len(CODE_RATES) * len(ALGORITHMS)} measured cases. "
-        "The sweep uses N={512, 1024, 2048} with CP=16. Each receiver cell is "
+        f"{len(PILOT_RATIOS) * len(FFT_SIZES) * len(CODE_RATES) * len(ALGORITHMS)} "
+        "measured cases. The requested Pilot Ratio values {0.25, 0.50, 0.75} "
+        "are split equally between inner and outer pilots. JunaCore densities "
+        "snap to realizable 1/k comb spacings, so each cell records the actual "
+        "inner and outer spacing. The sweep uses N={512, 1024, 2048} with CP=16. "
+        "Each receiver cell is "
         "**PSR / mean BER / mean decode time per block / effective data rate**. "
         "PSR is the fraction of payload-exact blocks; effective rate counts only "
         "successful payload blocks over the full capture duration. Click a cell to "
         "reveal the geometry, coverage, payload size, and bit errors.", "",
-        "| JunaCore commit | code rate | N | " + " | ".join(HEADERS) + " |",
-        "|---|---:|---:|" + "---:|" * len(HEADERS),
+        "| JunaCore commit | Pilot Ratio | code rate | N | " +
+        " | ".join(HEADERS) + " |",
+        "|---|---:|---:|---:|" + "---:|" * len(HEADERS),
     ]
     for commit in commits:
         if len(commit) != 40:
             raise ValueError(f"JunaCore commit must be a full 40-character SHA: {commit}")
         link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
-        for rate, label in CODE_RATES:
-            for nfft in FFT_SIZES:
-                results = grouped.get((commit, rate, nfft), {})
-                missing = sorted(set(ALGORITHMS) - set(results))
-                extra = sorted(set(results) - set(ALGORITHMS))
-                if missing or extra:
-                    raise ValueError(
-                        f"commit {commit[:7]} rate {label} N={nfft} has incomplete "
-                        f"receiver results; missing={missing}, extra={extra}")
-                if any(row["channel"] != "red1" or
-                       float(row["snr_db"]) != 20 or
-                       int(row["blocks"]) < 1 or int(row["cp"]) != 16 or
-                       int(row["nfft"]) != nfft for row in results.values()):
-                    raise ValueError(
-                        f"commit {commit[:7]} rate {label} N={nfft} mixes "
-                        "benchmark configurations")
-                if any(row["status"] != "ok" for row in results.values()):
-                    raise ValueError(
-                        f"commit {commit[:7]} rate {label} N={nfft} contains "
-                        "a failed benchmark")
+        for pilot_ratio in PILOT_RATIOS:
+            for rate, label in CODE_RATES:
+                for nfft in FFT_SIZES:
+                    results = grouped.get(
+                        (commit, pilot_ratio, rate, nfft), {})
+                    missing = sorted(set(ALGORITHMS) - set(results))
+                    extra = sorted(set(results) - set(ALGORITHMS))
+                    if missing or extra:
+                        raise ValueError(
+                            f"commit {commit[:7]} pilots {pilot_ratio:.2f} "
+                            f"rate {label} N={nfft} has incomplete receiver "
+                            f"results; missing={missing}, extra={extra}")
+                    expected_spacing = {0.25: 8, 0.5: 4, 0.75: 3}[pilot_ratio]
+                    if any(
+                        row["channel"] != "red1" or
+                        float(row["snr_db"]) != 20 or
+                        int(row["blocks"]) < 1 or int(row["cp"]) != 16 or
+                        int(row["nfft"]) != nfft or
+                        float(row["pilot_ratio"]) != pilot_ratio or
+                        int(row["outer_pilot_spacing"]) != expected_spacing or
+                        int(row["inner_pilot_spacing"]) != expected_spacing
+                        for row in results.values()
+                    ):
+                        raise ValueError(
+                            f"commit {commit[:7]} pilots {pilot_ratio:.2f} "
+                            f"rate {label} N={nfft} mixes benchmark "
+                            "configurations")
+                    if any(row["status"] != "ok" for row in results.values()):
+                        raise ValueError(
+                            f"commit {commit[:7]} pilots {pilot_ratio:.2f} "
+                            f"rate {label} N={nfft} contains a failed benchmark")
 
-                cells = [history_cell(results[algorithm]) for algorithm in ALGORITHMS]
-                lines.append(
-                    f"| {link} | {label} | {nfft} | " +
-                    " | ".join(cells) + " |")
+                    cells = [
+                        history_cell(results[algorithm])
+                        for algorithm in ALGORITHMS
+                    ]
+                    lines.append(
+                        f"| {link} | {pilot_ratio:.2f} | {label} | {nfft} | " +
+                        " | ".join(cells) + " |")
     return lines
 
 

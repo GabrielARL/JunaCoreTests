@@ -8,11 +8,15 @@ const CommitRateBenchmark = Main.ReceiverChannelBenchmark
 
 const CODE_RATES = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
 const FFT_SIZES = (512, 1024, 2048)
+const PILOT_RATIOS = (0.25, 0.5, 0.75)
 const CYCLIC_PREFIX = 16
 const HISTORY_COLUMNS = (
     :juna_core_commit,
     :channel,
     :snr_db,
+    :pilot_ratio,
+    :outer_pilot_spacing,
+    :inner_pilot_spacing,
     :code_rate,
     :nfft,
     :cp,
@@ -66,13 +70,17 @@ end
 csv_value(value::AbstractFloat) = @sprintf("%.12g", value)
 csv_value(value) = string(value)
 
-function history_row(commit, nfft, code_rate, capture_duration, row)
+function history_row(commit, nfft, code_rate, pilot_ratio, capture_duration, row)
     payload_bits_per_block = div(row.payload_bits, row.packets)
     covered_duration = row.packets * (nfft + CYCLIC_PREFIX) / row.modem_fs
+    pilot_geometry = CommitRateBenchmark._pilot_budget_geometry(pilot_ratio)
     (
         juna_core_commit=commit,
         channel=row.channel,
         snr_db=row.snr_db,
+        pilot_ratio=pilot_geometry.requested,
+        outer_pilot_spacing=pilot_geometry.outer_spacing,
+        inner_pilot_spacing=pilot_geometry.inner_spacing,
         code_rate=code_rate,
         nfft=nfft,
         cp=CYCLIC_PREFIX,
@@ -136,8 +144,11 @@ function main(args=ARGS)
     capture_duration = length(capture.phase) / capture.fs
 
     fresh_rows = NamedTuple[]
-    for code_rate in CODE_RATES, nfft in FFT_SIZES
-        println("benchmarking full SG-1 capture: N=$nfft rate=$code_rate")
+    for pilot_ratio in PILOT_RATIOS, code_rate in CODE_RATES, nfft in FFT_SIZES
+        println(
+            "benchmarking full SG-1 capture: pilots=$pilot_ratio " *
+            "N=$nfft rate=$code_rate",
+        )
         flush(stdout)
         rows = CommitRateBenchmark.benchmark_capture(
             capture;
@@ -151,21 +162,24 @@ function main(args=ARGS)
             nfft=nfft,
             cp=CYCLIC_PREFIX,
             code_rate=code_rate,
+            pilot_ratio=pilot_ratio,
             full_capture=true,
             warmup=true,
         )
         append!(fresh_rows,
                 history_row.(Ref(commit), Ref(nfft), Ref(code_rate),
+                             Ref(pilot_ratio),
                              Ref(capture_duration), rows))
     end
 
     length(fresh_rows) == length(FFT_SIZES) * length(CODE_RATES) *
+                          length(PILOT_RATIOS) *
                           length(CommitRateBenchmark.algorithm_descriptors()) ||
-        error("incomplete code-rate benchmark")
+        error("incomplete code-rate/pilot benchmark")
     all(row -> row.status == "ok", fresh_rows) ||
         error("one or more code-rate benchmark rows failed")
     output = write_history(options["out"], commit, fresh_rows)
-    println("wrote $(length(fresh_rows)) commit/code-rate rows to $output")
+    println("wrote $(length(fresh_rows)) commit/code-rate/pilot rows to $output")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

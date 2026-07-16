@@ -546,6 +546,36 @@ function _validate_capture_rate(channel, capture::ReplayCapture)
     nothing
 end
 
+function _pilot_budget_geometry(pilot_ratio)
+    pilot_ratio === nothing && return nothing
+    pilot_ratio isa Real || throw(ArgumentError("pilot ratio must be real"))
+    requested = Float64(pilot_ratio)
+    isfinite(requested) && 0 < requested <= 1 ||
+        throw(ArgumentError("pilot ratio must be finite and in (0, 1]"))
+    per_domain = requested / 2
+    outer_spacing = Juna._ratio_spacing(per_domain, 2)
+    inner_spacing = Juna._ratio_spacing(per_domain, 1)
+    (
+        requested=requested,
+        per_domain=per_domain,
+        outer_spacing=outer_spacing,
+        inner_spacing=inner_spacing,
+        outer_density=1 / outer_spacing,
+        inner_density=1 / inner_spacing,
+    )
+end
+
+function _configure_pilot_budget!(receiver, pilot_ratio)
+    geometry = _pilot_budget_geometry(pilot_ratio)
+    geometry === nothing && return receiver
+    receiver.pilot_ratio = geometry.per_domain
+    receiver.inner_pilot_ratio = geometry.per_domain
+    receiver.layout = nothing
+    receiver.code = nothing
+    receiver.bp_scratch = nothing
+    receiver
+end
+
 function _configure_code_rate!(receiver, code_rate)
     code_rate === nothing && return receiver
     code_rate isa Real || throw(ArgumentError("code rate must be real"))
@@ -593,7 +623,8 @@ function _configure_fft_geometry!(receiver, fs::Real, nfft, cp)
 end
 
 function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
-                           nfft=nothing, cp=nothing, code_rate=nothing)
+                           nfft=nothing, cp=nothing, code_rate=nothing,
+                           pilot_ratio=nothing)
     profile = select_modem_profile(modem_profile)
     Modulations.init(receiver, fc, fs)
     if profile.id === :rpchan_winner
@@ -617,17 +648,19 @@ function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
         receiver.layout = nothing
         receiver.bp_scratch = nothing
     end
+    _configure_pilot_budget!(receiver, pilot_ratio)
     _configure_fft_geometry!(receiver, fs, nfft, cp)
     _configure_code_rate!(receiver, code_rate)
 end
 
 function _receiver_set(algorithms, fc::Real, fs::Real;
                        modem_profile=:default, nfft=nothing, cp=nothing,
-                       code_rate=nothing)
+                       code_rate=nothing, pilot_ratio=nothing)
     receivers = map(algorithms) do descriptor
         receiver = _configure_modem!(
             descriptor.factory(), fc, fs, modem_profile;
-            nfft=nfft, cp=cp, code_rate=code_rate)
+            nfft=nfft, cp=cp, code_rate=code_rate,
+            pilot_ratio=pilot_ratio)
         isvalid(receiver, fc, fs) ||
             throw(ArgumentError("$(descriptor.name) is invalid at fc=$fc, fs=$fs"))
         (descriptor=descriptor, receiver=receiver)
@@ -665,6 +698,10 @@ exactly representable by that block length.
 When `nfft` or `cp` is provided, the benchmark applies that actual OFDM
 geometry and fits the coded block length to the QPSK data-carrier capacity,
 rounded down to a multiple of 16 so the supported rate sweep stays exact.
+When `pilot_ratio` is provided, it is a total requested pilot budget split
+equally between inner message pilots and outer carrier pilots. Each half is
+snapped by JunaCore to its nearest realizable `1/k` comb before carrier
+capacity is fitted.
 """
 function benchmark_capture(capture::ReplayCapture;
                            channel_id::AbstractString=capture.name,
@@ -677,6 +714,7 @@ function benchmark_capture(capture::ReplayCapture;
                            nfft=nothing,
                            cp=nothing,
                            code_rate=nothing,
+                           pilot_ratio=nothing,
                            full_capture::Bool=false,
                            warmup::Bool=true)
     full_capture && packets != 1 && throw(ArgumentError(
@@ -691,12 +729,12 @@ function benchmark_capture(capture::ReplayCapture;
         "$(profile.id) requires packet count divisible by $frame_packets"))
     receivers, payload_per_packet = _receiver_set(
         algorithms, fc, fs; modem_profile=profile.id,
-        nfft=nfft, cp=cp, code_rate=code_rate,
+        nfft=nfft, cp=cp, code_rate=code_rate, pilot_ratio=pilot_ratio,
     )
 
     transmitter = _configure_modem!(
         Juna.LiteModulation(), fc, fs, profile.id;
-        nfft=nfft, cp=cp, code_rate=code_rate)
+        nfft=nfft, cp=cp, code_rate=code_rate, pilot_ratio=pilot_ratio)
     Modulations.bitspersymbol(transmitter) == payload_per_packet ||
         throw(ArgumentError("transmitter and receivers disagree on payload geometry"))
 

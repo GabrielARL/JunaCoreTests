@@ -12,17 +12,36 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         fc=25_000.0,
         receiver=3,
     )
-    coded_bits_by_n = (
-        512 => 672,
-        1024 => 1360,
-        2048 => 2720,
+    coded_bits_by_pilot_and_n = Dict(
+        (0.25, 512) => 880,
+        (0.25, 1024) => 1776,
+        (0.25, 2048) => 3568,
+        (0.5, 512) => 752,
+        (0.5, 1024) => 1520,
+        (0.5, 2048) => 3056,
+        (0.75, 512) => 672,
+        (0.75, 1024) => 1360,
+        (0.75, 2048) => 2720,
     )
+    pilot_spacings = (0.25 => 8, 0.5 => 4, 0.75 => 3)
+    fft_sizes = (512, 1024, 2048)
     code_rates = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
 
-    for (nfft, coded_bits) in coded_bits_by_n, code_rate in code_rates
-        @testset "N=$nfft rate=$code_rate" begin
+    for (pilot_ratio, spacing) in pilot_spacings,
+        nfft in fft_sizes,
+        code_rate in code_rates
+        @testset "pilots=$pilot_ratio N=$nfft rate=$code_rate" begin
+            coded_bits = coded_bits_by_pilot_and_n[(pilot_ratio, nfft)]
             information_bits = round(Int, code_rate * coded_bits)
-            payload_bits = information_bits - cld(information_bits, 2)
+            payload_bits = information_bits - cld(information_bits, spacing)
+            geometry = CodeRateBenchmark._pilot_budget_geometry(pilot_ratio)
+            @test geometry.requested == pilot_ratio
+            @test geometry.per_domain == pilot_ratio / 2
+            @test geometry.outer_spacing == spacing
+            @test geometry.inner_spacing == spacing
+            @test geometry.outer_density == 1 / spacing
+            @test geometry.inner_density == 1 / spacing
+
             receivers, shared_payload = CodeRateBenchmark._receiver_set(
                 CodeRateBenchmark.algorithm_descriptors(),
                 capture.fc,
@@ -31,6 +50,7 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 nfft=nfft,
                 cp=16,
                 code_rate=code_rate,
+                pilot_ratio=pilot_ratio,
             )
             @test shared_payload == payload_bits
             for item in receivers
@@ -38,6 +58,20 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 @test Int(item.receiver.np) == 16
                 @test Int(item.receiver.ldpc_n) == coded_bits
                 @test Int(item.receiver.ldpc_k) == information_bits
+                @test item.receiver.pilot_ratio == pilot_ratio / 2
+                @test item.receiver.inner_pilot_ratio == pilot_ratio / 2
+                @test CodeRateBenchmark.Juna._pilot_spacing(item.receiver) == spacing
+                @test CodeRateBenchmark.Juna._inner_pilot_spacing(item.receiver) == spacing
+
+                layout = CodeRateBenchmark.Juna._layout(item.receiver, capture.fs)
+                expected_pilots = [
+                    carrier for carrier in layout.active
+                    if (carrier - 2) % spacing == 0
+                ]
+                @test layout.pilot_idx == expected_pilots
+                @test isempty(intersect(layout.pilot_idx, layout.data_idx))
+                @test sort(vcat(layout.pilot_idx, layout.data_idx)) ==
+                      sort(layout.active)
             end
 
             rows = CodeRateBenchmark.benchmark_capture(
@@ -52,6 +86,7 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 nfft=nfft,
                 cp=16,
                 code_rate=code_rate,
+                pilot_ratio=pilot_ratio,
                 warmup=false,
             )
 
@@ -77,6 +112,14 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         capture; packets=1, code_rate=0.0, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, code_rate=1 / 7, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, pilot_ratio=0.0, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, pilot_ratio=1.01, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, pilot_ratio=Inf, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, pilot_ratio="0.5", warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, nfft=1000, cp=16, code_rate=1 / 4, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
@@ -119,6 +162,7 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
             nfft=512,
             cp=16,
             code_rate=1 / 16,
+            pilot_ratio=0.25,
             full_capture=true,
             warmup=false,
         )
