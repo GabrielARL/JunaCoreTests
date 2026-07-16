@@ -17,7 +17,7 @@ SITES = ["SG-1", "SG-2", "SG-3", "NA-1", "NA-2", "NA-3",
 
 
 class FrontPageMatrixContract(unittest.TestCase):
-    def test_generated_page_leads_with_frame_wide_performance(self):
+    def test_generated_page_leads_with_commit_code_rate_performance(self):
         self.assertTrue(GENERATOR.is_file())
         with tempfile.TemporaryDirectory() as directory:
             readme = Path(directory) / "README.md"
@@ -29,15 +29,16 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("## Measured-channel performance", text)
         self.assertIn("JUNA Frame-wide LDPC", text)
         self.assertIn("| SG-1 | `red1` | 360/360 | **1.000** | 0 |", text)
-        self.assertLess(text.index("Frame-wide LDPC vs paper target"),
-                        text.index("Per-symbol receiver diagnostic sweep"))
+        self.assertIn("## Commit-by-rate receiver performance", text)
+        self.assertLess(text.index("Commit-by-rate receiver performance"),
+                        text.index("Frame-wide LDPC vs paper target"))
         self.assertIn("not directly comparable", text)
         self.assertIn("modem rate equals the capture rate", text)
         self.assertIn("does not include JUNA Frame-wide LDPC", text)
-        self.assertIn("### SG-1 at 20 dB commit history", text)
-        self.assertIn("| JunaCore commit | Standard OFDM | Partial FFT + FEC | JUNA-Lite | JUNA-Wz | JUNA-WCz |", text)
-        self.assertIn("0.000 / 0.116 / 3.30 ms", text)
-        self.assertIn("one independently coded packet is one OFDM block", text)
+        self.assertIn("| JunaCore commit | code rate | Standard OFDM | Partial FFT + FEC | JUNA-Lite | JUNA-Wz | JUNA-WCz |", text)
+        for code_rate in ("1/16", "1/8", "1/4", "1/2"):
+            self.assertIn(f"| {code_rate} |", text)
+        self.assertIn("one independently coded packet and one OFDM block", text)
         self.assertIn("PSR / BER / mean decode time per block", text)
         self.assertIn("0a2d927", text)
         self.assertIn("paper target PSR", text)
@@ -77,29 +78,34 @@ class FrontPageMatrixContract(unittest.TestCase):
 
         with HISTORY.open(encoding="utf-8") as stream:
             history_rows = list(csv.DictReader(stream))
-        self.assertGreaterEqual(len(history_rows), 5)
-        self.assertEqual(len(history_rows) % 5, 0)
+        self.assertGreaterEqual(len(history_rows), 20)
+        self.assertEqual(len(history_rows) % 20, 0)
         self.assertEqual({row["channel"] for row in history_rows}, {"red1"})
         self.assertEqual({row["snr_db"] for row in history_rows}, {"20"})
+        self.assertEqual({row["code_rate"] for row in history_rows},
+                         {"0.0625", "0.125", "0.25", "0.5"})
+        self.assertEqual({row["packets"] for row in history_rows}, {"1"})
         self.assertTrue(all(len(row["juna_core_commit"]) == 40 for row in history_rows))
         self.assertTrue(all(float(row["mean_decode_seconds_per_block"]) > 0
                             for row in history_rows))
         for commit in {row["juna_core_commit"] for row in history_rows}:
-            commit_rows = [row for row in history_rows
-                           if row["juna_core_commit"] == commit]
-            self.assertEqual(len(commit_rows), 5)
-            self.assertEqual({row["algorithm"] for row in commit_rows}, algorithms)
-
-        latest_commit = history_rows[-1]["juna_core_commit"]
-        latest = {row["algorithm"]: row for row in history_rows
-                  if row["juna_core_commit"] == latest_commit}
-        sweep_sg1 = {row["algorithm"]: row for row in rows
-                     if row["channel"] == "red1" and row["snr_db"] == "20"}
-        for algorithm, history_row in latest.items():
-            sweep_row = sweep_sg1[algorithm]
-            self.assertEqual(history_row["psr"], sweep_row["psr"])
-            self.assertEqual(history_row["ber"], sweep_row["ber"])
-            self.assertEqual(history_row["bit_errors"], sweep_row["bit_errors"])
+            for code_rate in ("0.0625", "0.125", "0.25", "0.5"):
+                commit_rows = [
+                    row for row in history_rows
+                    if row["juna_core_commit"] == commit and
+                    row["code_rate"] == code_rate
+                ]
+                self.assertEqual(len(commit_rows), 5)
+                self.assertEqual({row["algorithm"] for row in commit_rows}, algorithms)
+                for row in commit_rows:
+                    self.assertAlmostEqual(
+                        float(row["psr"]),
+                        int(row["successful_packets"]) / int(row["packets"]),
+                    )
+                    self.assertAlmostEqual(
+                        float(row["ber"]),
+                        int(row["bit_errors"]) / int(row["payload_bits"]),
+                    )
 
 
 if __name__ == "__main__":

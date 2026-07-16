@@ -12,6 +12,12 @@ ALGORITHMS = ["Standard OFDM", "Partial FFT+FEC", "JUNA-Lite", "JUNA-Wz", "JUNA-
 HEADERS = ["Standard OFDM", "Partial FFT + FEC", "JUNA-Lite", "JUNA-Wz", "JUNA-WCz"]
 SNRS = [0, 5, 10, 15, 20, 25, 30]
 JUNA_CORE_COMMITS = "https://github.com/GabrielARL/JunaCore.jl/commit"
+CODE_RATES = (
+    (0.0625, "1/16"),
+    (0.125, "1/8"),
+    (0.25, "1/4"),
+    (0.5, "1/2"),
+)
 
 
 def rows(path: Path) -> list[dict]:
@@ -37,6 +43,7 @@ def history_cell(row: dict) -> str:
     summary = f"{value(row)} / {milliseconds:.2f} ms"
     items = [
         f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
+        f"code rate: {code_rate_label(row['code_rate'])}",
         f"N: {row['nfft']}", f"CP: {row['cp']}",
         f"modem rate: {row['modem_fs']} samples/s",
         f"capture rate: {row['capture_fs']} samples/s",
@@ -47,6 +54,14 @@ def history_cell(row: dict) -> str:
     details = "<br>".join(html.escape(item) for item in items)
     return ('<details class="cell-details"><summary>' + summary +
             '</summary><sub>' + details + '</sub></details>')
+
+
+def code_rate_label(value: str) -> str:
+    number = float(value)
+    for expected, label in CODE_RATES:
+        if number == expected:
+            return label
+    raise ValueError(f"unsupported commit-history code rate: {value}")
 
 
 def frame_wide_table(configs: list[dict]) -> list[str]:
@@ -79,44 +94,52 @@ def frame_wide_table(configs: list[dict]) -> list[str]:
 
 def commit_history_table(history: list[dict]) -> list[str]:
     grouped = {}
+    commits = []
     for row in history:
         commit = row["juna_core_commit"]
-        results = grouped.setdefault(commit, {})
+        if commit not in commits:
+            commits.append(commit)
+        rate = float(row["code_rate"])
+        code_rate_label(row["code_rate"])
+        results = grouped.setdefault((commit, rate), {})
         if row["algorithm"] in results:
             raise ValueError(
-                f"commit {commit[:7]} contains duplicate {row['algorithm']} results")
+                f"commit {commit[:7]} rate {rate} contains duplicate "
+                f"{row['algorithm']} results")
         results[row["algorithm"]] = row
 
     lines = [
-        "### SG-1 at 20 dB commit history", "",
-        "This comparison fixes the channel, SNR, seed, and ten-packet workload. "
-        "Under this diagnostic profile, one independently coded packet is one OFDM block. "
-        "Each cell is **PSR / BER / mean decode time per block**. Click a cell to reveal "
-        "the fixed geometry, sample rates, packet count, seed, and bit errors.", "",
-        "| JunaCore commit | " + " | ".join(HEADERS) + " |",
-        "|---|" + "---:|" * len(HEADERS),
+        "This main comparison fixes SG-1, 20 dB, seed 1, and uses one independently "
+        "coded packet and one OFDM block per case. Each commit therefore records "
+        f"{len(CODE_RATES) * len(ALGORITHMS)} measured cases. Each receiver cell is "
+        "**PSR / BER / mean decode time per block**. With one block, PSR is necessarily "
+        "binary; BER carries the finer error information. Click a cell to reveal the "
+        "geometry, sample rates, payload size, and bit errors.", "",
+        "| JunaCore commit | code rate | " + " | ".join(HEADERS) + " |",
+        "|---|---:|" + "---:|" * len(HEADERS),
     ]
-    for commit, results in grouped.items():
+    for commit in commits:
         if len(commit) != 40:
             raise ValueError(f"JunaCore commit must be a full 40-character SHA: {commit}")
-        missing = sorted(set(ALGORITHMS) - set(results))
-        extra = sorted(set(results) - set(ALGORITHMS))
-        if missing or extra:
-            raise ValueError(
-                f"commit {commit[:7]} has incomplete receiver results; "
-                f"missing={missing}, extra={extra}")
-        if any(row["channel"] != "red1" or float(row["snr_db"]) != 20
-               for row in results.values()):
-            raise ValueError(f"commit {commit[:7]} mixes benchmark configurations")
-        if any(row["status"] != "ok" for row in results.values()):
-            raise ValueError(f"commit {commit[:7]} contains a failed benchmark")
-
-        cells = []
-        for algorithm in ALGORITHMS:
-            row = results[algorithm]
-            cells.append(history_cell(row))
         link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
-        lines.append(f"| {link} | " + " | ".join(cells) + " |")
+        for rate, label in CODE_RATES:
+            results = grouped.get((commit, rate), {})
+            missing = sorted(set(ALGORITHMS) - set(results))
+            extra = sorted(set(results) - set(ALGORITHMS))
+            if missing or extra:
+                raise ValueError(
+                    f"commit {commit[:7]} rate {label} has incomplete receiver results; "
+                    f"missing={missing}, extra={extra}")
+            if any(row["channel"] != "red1" or float(row["snr_db"]) != 20 or
+                   int(row["packets"]) != 1 for row in results.values()):
+                raise ValueError(
+                    f"commit {commit[:7]} rate {label} mixes benchmark configurations")
+            if any(row["status"] != "ok" for row in results.values()):
+                raise ValueError(
+                    f"commit {commit[:7]} rate {label} contains a failed benchmark")
+
+            cells = [history_cell(results[algorithm]) for algorithm in ALGORITHMS]
+            lines.append(f"| {link} | {label} | " + " | ".join(cells) + " |")
     return lines
 
 
@@ -131,8 +154,10 @@ def render(repo: Path) -> str:
     if missing:
         raise ValueError(f"incomplete receiver matrix; missing {missing[:5]}")
 
-    lines = [
-        BEGIN,
+    lines = [BEGIN, "## Commit-by-rate receiver performance", ""]
+    lines += commit_history_table(history)
+    lines += [
+        "",
         "## Measured-channel performance", "",
         "The headline result is **JUNA Frame-wide LDPC** with Rpchan-compatible "
         "framing, pilots, code construction, preamble acquisition, and one LDPC "
@@ -150,10 +175,7 @@ def render(repo: Path) -> str:
              "instead of Rpchan's half-rate modem configuration. A packet succeeds only "
              "when every payload bit is correct, so the measured BER values naturally "
              "produce PSR 0/10 throughout this small diagnostic.", "",
-             ]
-    lines += commit_history_table(history)
-
-    lines += ["", "### All per-symbol SNR configurations", ""]
+             "### All per-symbol SNR configurations", ""]
     for config in configs:
         channel = config["channel"]
         lines += ["<details>",

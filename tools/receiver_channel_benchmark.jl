@@ -509,7 +509,24 @@ function _validate_capture_rate(channel, capture::ReplayCapture)
     nothing
 end
 
-function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile)
+function _configure_code_rate!(receiver, code_rate)
+    code_rate === nothing && return receiver
+    code_rate isa Real || throw(ArgumentError("code rate must be real"))
+    rate = Float64(code_rate)
+    isfinite(rate) && 0 < rate < 1 ||
+        throw(ArgumentError("code rate must be finite and strictly between zero and one"))
+    block_n = Int(receiver.ldpc_n)
+    block_k = round(Int, rate * block_n)
+    block_k / block_n == rate || throw(ArgumentError(
+        "code rate $rate is not exactly representable with LDPC block length $block_n"))
+    receiver.ldpc_k = block_k
+    receiver.code = nothing
+    receiver.bp_scratch = nothing
+    receiver
+end
+
+function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
+                           code_rate=nothing)
     profile = select_modem_profile(modem_profile)
     Modulations.init(receiver, fc, fs)
     if profile.id === :rpchan_winner
@@ -533,12 +550,14 @@ function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile)
         receiver.layout = nothing
         receiver.bp_scratch = nothing
     end
-    receiver
+    _configure_code_rate!(receiver, code_rate)
 end
 
-function _receiver_set(algorithms, fc::Real, fs::Real; modem_profile=:default)
+function _receiver_set(algorithms, fc::Real, fs::Real;
+                       modem_profile=:default, code_rate=nothing)
     receivers = map(algorithms) do descriptor
-        receiver = _configure_modem!(descriptor.factory(), fc, fs, modem_profile)
+        receiver = _configure_modem!(
+            descriptor.factory(), fc, fs, modem_profile; code_rate=code_rate)
         isvalid(receiver, fc, fs) ||
             throw(ArgumentError("$(descriptor.name) is invalid at fc=$fc, fs=$fs"))
         (descriptor=descriptor, receiver=receiver)
@@ -570,6 +589,9 @@ replayed samples. BER penalizes a thrown decoder as one entirely erroneous
 packet; `decode_failures` keeps that operational failure visible. A packet is
 successful only when all payload bits are recovered exactly. Decode timing
 contains the public `demodulate` call only and follows an untimed warm-up.
+When `code_rate` is provided, the benchmark keeps the profile's coded block
+length and changes its information length only; the requested rate must be
+exactly representable by that block length.
 """
 function benchmark_capture(capture::ReplayCapture;
                            channel_id::AbstractString=capture.name,
@@ -579,6 +601,7 @@ function benchmark_capture(capture::ReplayCapture;
                            seed::Integer=1,
                            modem_fs=nothing,
                            modem_profile=:default,
+                           code_rate=nothing,
                            warmup::Bool=true)
     _validate_benchmark(packets, snr_db, seed)
     isempty(algorithms) && throw(ArgumentError("select at least one algorithm"))
@@ -590,10 +613,11 @@ function benchmark_capture(capture::ReplayCapture;
         "$(profile.id) requires packet count divisible by $frame_packets"))
     frame_count = div(packets, frame_packets)
     receivers, payload_per_packet = _receiver_set(
-        algorithms, fc, fs; modem_profile=profile.id,
+        algorithms, fc, fs; modem_profile=profile.id, code_rate=code_rate,
     )
 
-    transmitter = _configure_modem!(Juna.LiteModulation(), fc, fs, profile.id)
+    transmitter = _configure_modem!(
+        Juna.LiteModulation(), fc, fs, profile.id; code_rate=code_rate)
     Modulations.bitspersymbol(transmitter) == payload_per_packet ||
         throw(ArgumentError("transmitter and receivers disagree on payload geometry"))
 
