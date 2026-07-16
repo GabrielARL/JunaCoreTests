@@ -81,6 +81,63 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         capture; packets=1, nfft=1000, cp=16, code_rate=1 / 4, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, nfft=512, cp=512, code_rate=1 / 4, warmup=false)
+
+    @testset "full-capture positions and block accounting" begin
+        segment = CodeRateBenchmark.ReplayCoupledSegment
+        positioned = segment.ReplayCapture(
+            ones(ComplexF64, 2, 100),
+            zeros(2_000),
+            1_000.0,
+            25_000.0,
+            10,
+            1,
+            "positions",
+        )
+        @test CodeRateBenchmark._full_capture_positions(
+            positioned, 100, 1_000.0) == collect(1:10:81)
+
+        short = segment.ReplayCapture(
+            ones(ComplexF64, 1, 15),
+            zeros(3_000),
+            19_200.0,
+            25_000.0,
+            100,
+            3,
+            "short-full",
+        )
+        positions = CodeRateBenchmark._full_capture_positions(short, 528, 19_200.0)
+        @test positions == [1, 6]
+        rows = CodeRateBenchmark.benchmark_capture(
+            short;
+            channel_id="short-full",
+            packets=1,
+            algorithms=CodeRateBenchmark.algorithm_descriptors(),
+            snr_db=Inf,
+            seed=1,
+            modem_fs=:capture,
+            modem_profile=:default,
+            nfft=512,
+            cp=16,
+            code_rate=1 / 16,
+            full_capture=true,
+            warmup=false,
+        )
+        @test length(rows) == 5
+        for row in rows
+            @test row.packets == length(positions)
+            @test row.successful_packets == length(positions)
+            @test row.psr == 1.0
+            @test row.ber == 0.0
+            @test row.mean_decode_seconds ==
+                  row.total_decode_seconds / length(positions)
+        end
+
+        @test CodeRateBenchmark._effective_data_rate(3, 42, 10.0) == 12.6
+        @test_throws ArgumentError CodeRateBenchmark._effective_data_rate(
+            -1, 42, 10.0)
+        @test_throws ArgumentError CodeRateBenchmark._effective_data_rate(
+            1, 42, 0.0)
+    end
 end
 
 println("commit code-rate benchmark checks passed")

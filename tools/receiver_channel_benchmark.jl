@@ -318,6 +318,22 @@ function _snapshot_positions(capture::ReplayCapture, packets::Integer,
     waveform_length > 0 || throw(ArgumentError("waveform length must be positive"))
     rate = Float64(modem_fs)
     isfinite(rate) && rate > 0 || throw(ArgumentError("modem fs must be positive"))
+    channel_samples, stop = _capture_position_limit(
+        capture, waveform_length, rate)
+    count <= stop || throw(ArgumentError(
+        "capture has only $stop distinct packet positions, requested $count"))
+    packets == 1 && return [1]
+    positions = round.(Int, range(1, stop; length=count))
+    allunique(positions) || throw(ArgumentError("packet positions are not distinct"))
+    positions
+end
+
+function _capture_position_limit(capture::ReplayCapture,
+                                 waveform_length::Integer,
+                                 modem_fs::Real)
+    waveform_length > 0 || throw(ArgumentError("waveform length must be positive"))
+    rate = Float64(modem_fs)
+    isfinite(rate) && rate > 0 || throw(ArgumentError("modem fs must be positive"))
     channel_samples = ceil(Int, waveform_length * capture.fs / rate)
     output_samples = channel_samples + size(capture.h, 1) - 1
     last_offset = output_samples - 1
@@ -328,12 +344,33 @@ function _snapshot_positions(capture::ReplayCapture, packets::Integer,
     last_phase_snapshot = div(length(capture.phase) - last_offset, capture.step)
     stop = min(last_tap_snapshot, last_phase_snapshot)
     stop >= 1 || throw(ArgumentError("capture is too short for one waveform"))
-    count <= stop || throw(ArgumentError(
-        "capture has only $stop distinct packet positions, requested $count"))
-    packets == 1 && return [1]
-    positions = round.(Int, range(1, stop; length=count))
-    allunique(positions) || throw(ArgumentError("packet positions are not distinct"))
+    channel_samples, stop
+end
+
+function _full_capture_positions(capture::ReplayCapture,
+                                 waveform_length::Integer,
+                                 modem_fs::Real)
+    channel_samples, stop = _capture_position_limit(
+        capture, waveform_length, modem_fs)
+    count = fld((stop - 1) * capture.step, channel_samples) + 1
+    positions = unique(round.(Int,
+        1 .+ (0:(count - 1)) .* (channel_samples / capture.step)))
+    isempty(positions) && throw(ArgumentError("capture has no complete block positions"))
+    last(positions) <= stop ||
+        throw(ArgumentError("full-capture position exceeds channel support"))
     positions
+end
+
+function _effective_data_rate(successful_blocks::Integer,
+                              payload_bits_per_block::Integer,
+                              duration_seconds::Real)
+    successful_blocks >= 0 ||
+        throw(ArgumentError("successful block count must be nonnegative"))
+    payload_bits_per_block > 0 ||
+        throw(ArgumentError("payload bits per block must be positive"))
+    isfinite(duration_seconds) && duration_seconds > 0 ||
+        throw(ArgumentError("capture duration must be finite and positive"))
+    successful_blocks * payload_bits_per_block / Float64(duration_seconds)
 end
 
 function _paper_frame_packet_counts(decoded_packets::Integer)
@@ -640,16 +677,18 @@ function benchmark_capture(capture::ReplayCapture;
                            nfft=nothing,
                            cp=nothing,
                            code_rate=nothing,
+                           full_capture::Bool=false,
                            warmup::Bool=true)
-    _validate_benchmark(packets, snr_db, seed)
+    full_capture && packets != 1 && throw(ArgumentError(
+        "full-capture benchmark derives its block count; leave packets=1"))
+    _validate_benchmark(full_capture ? 1 : packets, snr_db, seed)
     isempty(algorithms) && throw(ArgumentError("select at least one algorithm"))
     fs = _resolve_modem_fs(capture, modem_fs)
     fc = capture.fc
     profile = select_modem_profile(modem_profile)
     frame_packets = profile.frame_packets
-    packets % frame_packets == 0 || throw(ArgumentError(
+    full_capture || packets % frame_packets == 0 || throw(ArgumentError(
         "$(profile.id) requires packet count divisible by $frame_packets"))
-    frame_count = div(packets, frame_packets)
     receivers, payload_per_packet = _receiver_set(
         algorithms, fc, fs; modem_profile=profile.id,
         nfft=nfft, cp=cp, code_rate=code_rate,
@@ -671,9 +710,12 @@ function benchmark_capture(capture::ReplayCapture;
     failures = zeros(Int, length(receivers))
     decode_samples = [Float64[] for _ in receivers]
     errors = fill("", length(receivers))
-    snapshots = _snapshot_positions(
-        capture, frame_count, length(warm_waveform), fs,
-    )
+    snapshots = full_capture ?
+        _full_capture_positions(capture, length(warm_waveform), fs) :
+        _snapshot_positions(capture, div(packets, frame_packets),
+                            length(warm_waveform), fs)
+    frame_count = length(snapshots)
+    packets = frame_count * frame_packets
 
     for frame in 1:frame_count
         rng = MersenneTwister(Int(seed) + frame - 1)

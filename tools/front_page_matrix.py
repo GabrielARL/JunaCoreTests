@@ -41,16 +41,21 @@ def value(row: dict) -> str:
 
 def history_cell(row: dict) -> str:
     milliseconds = 1_000 * float(row["mean_decode_seconds_per_block"])
-    summary = f"{value(row)} / {milliseconds:.2f} ms"
+    effective_rate = float(row["effective_data_rate_bps"])
+    summary = (f"{value(row)} / {milliseconds:.2f} ms / "
+               f"{effective_rate:.1f} bit/s")
     items = [
         f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
         f"code rate: {code_rate_label(row['code_rate'])}",
         f"N: {row['nfft']}", f"CP: {row['cp']}",
         f"modem rate: {row['modem_fs']} samples/s",
         f"capture rate: {row['capture_fs']} samples/s",
-        f"packets: {row['packets']}", f"seed: {row['seed']}",
+        f"blocks: {row['blocks']}", f"seed: {row['seed']}",
         f"mean decode: {milliseconds:.2f} ms/block",
         f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
+        f"capture duration: {float(row['capture_duration_seconds']):.3f} s",
+        f"covered duration: {float(row['covered_duration_seconds']):.3f} s",
+        f"effective data rate: {effective_rate:.1f} bit/s",
     ]
     details = "<br>".join(html.escape(item) for item in items)
     return ('<details class="cell-details"><summary>' + summary +
@@ -113,13 +118,14 @@ def commit_history_table(history: list[dict]) -> list[str]:
         results[row["algorithm"]] = row
 
     lines = [
-        "This main comparison fixes SG-1, 20 dB, seed 1, and uses one independently "
-        "coded packet and one OFDM block per case. Each commit therefore records "
+        "This main comparison runs each configuration through the full 47-second "
+        "SG-1 capture at 20 dB with seed 1. Each commit therefore records "
         f"{len(FFT_SIZES) * len(CODE_RATES) * len(ALGORITHMS)} measured cases. "
         "The sweep uses N={512, 1024, 2048} with CP=16. Each receiver cell is "
-        "**PSR / BER / mean decode time per block**. With one block, PSR is necessarily "
-        "binary; BER carries the finer error information. Click a cell to reveal the "
-        "geometry, sample rates, payload size, and bit errors.", "",
+        "**PSR / mean BER / mean decode time per block / effective data rate**. "
+        "PSR is the fraction of payload-exact blocks; effective rate counts only "
+        "successful payload blocks over the full capture duration. Click a cell to "
+        "reveal the geometry, coverage, payload size, and bit errors.", "",
         "| JunaCore commit | code rate | N | " + " | ".join(HEADERS) + " |",
         "|---|---:|---:|" + "---:|" * len(HEADERS),
     ]
@@ -138,7 +144,7 @@ def commit_history_table(history: list[dict]) -> list[str]:
                         f"receiver results; missing={missing}, extra={extra}")
                 if any(row["channel"] != "red1" or
                        float(row["snr_db"]) != 20 or
-                       int(row["packets"]) != 1 or int(row["cp"]) != 16 or
+                       int(row["blocks"]) < 1 or int(row["cp"]) != 16 or
                        int(row["nfft"]) != nfft for row in results.values()):
                     raise ValueError(
                         f"commit {commit[:7]} rate {label} N={nfft} mixes "

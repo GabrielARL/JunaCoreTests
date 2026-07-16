@@ -158,7 +158,7 @@ const SUITES = [
      paper = "measured replay captures (1951-1958), replay evaluation protocol (1920-1958), transfer study (2205-2248)"),
     (key = "commit-rate-benchmark", file = "commit_code_rate_benchmark.jl",
      title = "Replay: commit-by-code-rate receiver matrix",
-     claim = "every receiver supports one-block N=512/1024/2048, CP=16 LDPC geometries at rates 1/16, 1/8, 1/4, and 1/2; the measured SG-1 recorder runs all 60 cases and tags results with the clean JunaCore source commit",
+     claim = "every receiver supports N=512/1024/2048, CP=16 LDPC geometries at rates 1/16, 1/8, 1/4, and 1/2; the measured SG-1 recorder covers the full 47-second channel and reports block PSR, mean BER, mean decode time, and effective rate for all 60 cases under the clean JunaCore source commit",
      paper = "implementation diagnostic over the measured SG-1 channel; not a paper-performance claim"),
     (key = "replay-scripts", file = "replay_reproduction_scripts.jl",
      title = "Replay: paper reproduction scripts",

@@ -19,13 +19,16 @@ const HISTORY_COLUMNS = (
     :modem_fs,
     :capture_fs,
     :algorithm,
-    :packets,
-    :successful_packets,
+    :blocks,
+    :successful_blocks,
     :psr,
     :payload_bits,
     :bit_errors,
     :ber,
     :mean_decode_seconds_per_block,
+    :capture_duration_seconds,
+    :covered_duration_seconds,
+    :effective_data_rate_bps,
     :seed,
     :status,
 )
@@ -63,7 +66,9 @@ end
 csv_value(value::AbstractFloat) = @sprintf("%.12g", value)
 csv_value(value) = string(value)
 
-function history_row(commit, nfft, code_rate, row)
+function history_row(commit, nfft, code_rate, capture_duration, row)
+    payload_bits_per_block = div(row.payload_bits, row.packets)
+    covered_duration = row.packets * (nfft + CYCLIC_PREFIX) / row.modem_fs
     (
         juna_core_commit=commit,
         channel=row.channel,
@@ -74,13 +79,17 @@ function history_row(commit, nfft, code_rate, row)
         modem_fs=row.modem_fs,
         capture_fs=row.capture_fs,
         algorithm=row.algorithm,
-        packets=row.packets,
-        successful_packets=row.successful_packets,
+        blocks=row.packets,
+        successful_blocks=row.successful_packets,
         psr=row.psr,
         payload_bits=row.payload_bits,
         bit_errors=row.bit_errors,
         ber=row.ber,
         mean_decode_seconds_per_block=row.mean_decode_seconds,
+        capture_duration_seconds=capture_duration,
+        covered_duration_seconds=covered_duration,
+        effective_data_rate_bps=CommitRateBenchmark._effective_data_rate(
+            row.successful_packets, payload_bits_per_block, capture_duration),
         seed=row.seed,
         status=row.status,
     )
@@ -91,9 +100,15 @@ function write_history(path, commit, fresh_rows)
     preserved = String[]
     if isfile(path)
         existing = readlines(path)
-        isempty(existing) || first(existing) == header ||
-            throw(ArgumentError("history CSV schema does not match recorder"))
-        append!(preserved, filter(line -> !startswith(line, commit * ","), existing[2:end]))
+        if !isempty(existing) && first(existing) != header
+            old_commits = Set(first(split(line, ',')) for line in existing[2:end]
+                              if !isempty(line))
+            old_commits == Set([commit]) || throw(ArgumentError(
+                "history CSV schema changed and contains other source commits"))
+        else
+            append!(preserved,
+                    filter(line -> !startswith(line, commit * ","), existing[2:end]))
+        end
     end
 
     mkpath(dirname(abspath(path)))
@@ -118,9 +133,12 @@ function main(args=ARGS)
         receiver=3,
     )
     CommitRateBenchmark._validate_capture_rate(channel, capture)
+    capture_duration = length(capture.phase) / capture.fs
 
     fresh_rows = NamedTuple[]
     for code_rate in CODE_RATES, nfft in FFT_SIZES
+        println("benchmarking full SG-1 capture: N=$nfft rate=$code_rate")
+        flush(stdout)
         rows = CommitRateBenchmark.benchmark_capture(
             capture;
             channel_id="red1",
@@ -133,10 +151,12 @@ function main(args=ARGS)
             nfft=nfft,
             cp=CYCLIC_PREFIX,
             code_rate=code_rate,
+            full_capture=true,
             warmup=true,
         )
         append!(fresh_rows,
-                history_row.(Ref(commit), Ref(nfft), Ref(code_rate), rows))
+                history_row.(Ref(commit), Ref(nfft), Ref(code_rate),
+                             Ref(capture_duration), rows))
     end
 
     length(fresh_rows) == length(FFT_SIZES) * length(CODE_RATES) *

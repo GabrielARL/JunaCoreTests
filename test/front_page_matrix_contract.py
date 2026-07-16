@@ -41,8 +41,11 @@ class FrontPageMatrixContract(unittest.TestCase):
         for nfft in ("512", "1024", "2048"):
             self.assertIn(f"| 1/16 | {nfft} |", text)
         self.assertIn("60 measured cases", text)
-        self.assertIn("one independently coded packet and one OFDM block", text)
-        self.assertIn("PSR / BER / mean decode time per block", text)
+        self.assertIn("full 47-second SG-1 capture", text)
+        self.assertIn(
+            "PSR / mean BER / mean decode time per block / effective data rate",
+            text,
+        )
         self.assertIn("0a2d927", text)
         self.assertIn("paper target PSR", text)
         self.assertIn("mean decode/frame", text)
@@ -90,7 +93,14 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertEqual({row["cp"] for row in history_rows}, {"16"})
         self.assertEqual({row["code_rate"] for row in history_rows},
                          {"0.0625", "0.125", "0.25", "0.5"})
-        self.assertEqual({row["packets"] for row in history_rows}, {"1"})
+        self.assertTrue(all(int(row["blocks"]) > 400 for row in history_rows))
+        self.assertTrue(all(47 < float(row["capture_duration_seconds"]) < 49
+                            for row in history_rows))
+        self.assertTrue(all(
+            float(row["covered_duration_seconds"]) /
+            float(row["capture_duration_seconds"]) > 0.99
+            for row in history_rows
+        ))
         self.assertTrue(all(len(row["juna_core_commit"]) == 40 for row in history_rows))
         self.assertTrue(all(float(row["mean_decode_seconds_per_block"]) > 0
                             for row in history_rows))
@@ -109,11 +119,19 @@ class FrontPageMatrixContract(unittest.TestCase):
                     for row in commit_rows:
                         self.assertAlmostEqual(
                             float(row["psr"]),
-                            int(row["successful_packets"]) / int(row["packets"]),
+                            int(row["successful_blocks"]) / int(row["blocks"]),
                         )
                         self.assertAlmostEqual(
                             float(row["ber"]),
                             int(row["bit_errors"]) / int(row["payload_bits"]),
+                        )
+                        payload_per_block = (
+                            int(row["payload_bits"]) / int(row["blocks"])
+                        )
+                        self.assertAlmostEqual(
+                            float(row["effective_data_rate_bps"]),
+                            int(row["successful_blocks"]) * payload_per_block /
+                            float(row["capture_duration_seconds"]),
                         )
 
 
