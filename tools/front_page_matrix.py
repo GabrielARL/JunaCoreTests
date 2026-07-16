@@ -31,15 +31,16 @@ def value(row: dict) -> str:
     return f"{fmt_psr(row['psr'])} / {fmt_ber(row['ber'])}"
 
 
-def tooltip(row: dict, config: dict) -> str:
-    details = (
-        f"profile={row['profile']}; N={config['nfft']}; CP={config['cp']}; "
-        f"modem rate={row['modem_fs']} samples/s; capture rate={row['capture_fs']} samples/s; "
-        f"packets={row['packets']}; seed={row['seed']}; "
-        f"mean decode={float(row['mean_decode_seconds']):.4f} s; "
-        f"bit errors={row['bit_errors']}/{row['payload_bits']}"
-    )
-    return html.escape(details, quote=True)
+def cell_details(row: dict, config: dict) -> str:
+    items = [
+        f"profile: {row['profile']}", f"N: {config['nfft']}", f"CP: {config['cp']}",
+        f"modem rate: {row['modem_fs']} samples/s",
+        f"capture rate: {row['capture_fs']} samples/s",
+        f"packets: {row['packets']}", f"seed: {row['seed']}",
+        f"mean decode: {float(row['mean_decode_seconds']):.4f} s",
+        f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
+    ]
+    return "<br>".join(html.escape(item) for item in items)
 
 
 def render(repo: Path) -> str:
@@ -53,7 +54,7 @@ def render(repo: Path) -> str:
         raise ValueError(f"incomplete receiver matrix; missing {missing[:5]}")
 
     lines = [BEGIN, "## Five-receiver comparison", "",
-             "Headline values are **PSR / BER at 20 dB**. Hover over a cell for its "
+             "Headline values are **PSR / BER at 20 dB**. Click a cell to reveal its "
              "configuration, sample rates, packet count, seed, decode time, and bit errors. "
              "Expand a site below the table to compare every SNR configuration.", "",
              "| site | " + " | ".join(HEADERS) + " |",
@@ -63,7 +64,8 @@ def render(repo: Path) -> str:
         cells = []
         for algorithm in ALGORITHMS:
             row = by_key[(channel, 20, algorithm)]
-            cells.append(f'<abbr title="{tooltip(row, config)}">{value(row)}</abbr>')
+            cells.append('<details class="cell-details"><summary>' + value(row) +
+                         '</summary><sub>' + cell_details(row, config) + '</sub></details>')
         lines.append(f"| {config['label']} | " + " | ".join(cells) + " |")
 
     lines += ["", "### All configurations", ""]
