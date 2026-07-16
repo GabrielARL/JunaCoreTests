@@ -1,0 +1,6 @@
+Manifest.toml
+logs/
+data/
+bench/latest.json
+ldpc-*.pchk
+ldpc-*.gen

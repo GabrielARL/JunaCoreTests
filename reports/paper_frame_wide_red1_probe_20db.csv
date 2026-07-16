@@ -1,0 +1,2 @@
+channel,label,algorithm,receiver,nfft,cp,outer_spacing,inner_spacing,fec_rate,check_degree,modem_fs,capture_fs,snr_db,seed,frames,decoded_packets,accepted_packets,psr,psr_ci95_low,psr_ci95_high,payload_bits,bit_errors,ber,decode_failures,mean_decode_seconds,total_decode_seconds,effective_rate_bps,target_decoded_packets,target_accepted_packets,target_psr,target_ber,target_rate_bps,psr_delta,ber_delta,status
+red1,SG-1,JUNA Frame-wide LDPC,3,1024,16,5,10,0.5,10,9600,19200,20,51001,1,10,10,1,0.722467200137,1,7353,0,0,0,0.62287522,0.62287522,153.855274629,360,360,1,0,5540,0,0,ok

@@ -1,0 +1,8 @@
+stage	status	max_abs	relative_l2	note
+passband	pass	0.0	0.0	exact immutable input sample contract
+acquisition_lag	pass	0.0	0.0	
+partial_fft	pass	0.0	0.0	active-bin ordering and 1/sqrt(N) scale normalized
+equalized_symbols	diverge	138.01380829542575	2.814280637465092	reference=ReplayCh symbol-sequential band RLS, forgetting=0.98, delta=0.01, then pilot-linear residual calibration; actual=JunaCore per-symbol band ridge, lambda=1e-3; pilot-bin overlap=0/205 ReplayCh and 205 JunaCore
+llrs	blocked	NaN	NaN	not compared because equalized_symbols diverged first
+ldpc_output	blocked	NaN	NaN	not compared because equalized_symbols diverged first
+first_divergence	equalized_symbols

@@ -1,0 +1,6 @@
+channel,color,algorithm,profile,modem_profile,frame_packets,receiver,modem_fs,capture_fs,packets,successful_packets,psr,psr_ci95_low,psr_ci95_high,payload_bits,bit_errors,ber,decode_failures,mean_decode_seconds,median_decode_seconds,p95_decode_seconds,total_decode_seconds,snr_db,seed,status
+red1,red,Standard OFDM,standard,rpchan_winner,10,1,9600,19200,10,0,0,0,0.277532799863,7350,1192,0.162176870748,0,0.0072286872,0.0072286872,0.0072286872,0.072286872,20,1,ok
+red1,red,Partial FFT+FEC,pfft,rpchan_winner,10,1,9600,19200,10,0,0,0,0.277532799863,7350,1305,0.177551020408,0,0.0069724832,0.0069724832,0.0069724832,0.069724832,20,1,ok
+red1,red,JUNA-Lite,lite,rpchan_winner,10,1,9600,19200,10,0,0,0,0.277532799863,7350,1153,0.156870748299,0,0.0250005228,0.0250005228,0.0250005228,0.250005228,20,1,ok
+red1,red,JUNA-Wz,full,rpchan_winner,10,1,9600,19200,10,0,0,0,0.277532799863,7350,1430,0.194557823129,0,0.1642472327,0.1642472327,0.1642472327,1.642472327,20,1,ok
+red1,red,JUNA-WCz,coupled,rpchan_winner,10,1,9600,19200,10,0,0,0,0.277532799863,7350,1456,0.198095238095,0,0.0242321052,0.0242321052,0.0242321052,0.242321052,20,1,ok

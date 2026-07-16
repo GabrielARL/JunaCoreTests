@@ -1,0 +1,4 @@
+Generated from: /home/gabiel/Documents/GitHub/Juna_replay_channel_1ch
+TeX target: tex/replay channel results juna.tex
+PDF: replay channel results juna.pdf
+Created: 2026-07-10T09:05:54+08:00

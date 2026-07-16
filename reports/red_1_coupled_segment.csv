@@ -1,0 +1,2 @@
+channel,receiver,snapshot,modem_fs,capture_fs,payload_bits,bit_errors,ber,valid,syndrome,objective_initial,objective_best,objective_reduction,selected_iteration,selected_candidate,decode_seconds,alignment_lag,alignment_score
+red_1,3,1,9600,19200,170,0,0,true,0,3.34145616607,3.25077717654,0.0906789895233,8,seed,0.00629644,10,0.640214770808

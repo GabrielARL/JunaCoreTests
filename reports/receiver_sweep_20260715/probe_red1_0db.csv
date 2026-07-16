@@ -1,0 +1,6 @@
+channel,color,algorithm,profile,receiver,modem_fs,capture_fs,packets,successful_packets,psr,payload_bits,bit_errors,ber,decode_failures,mean_decode_seconds,total_decode_seconds,snr_db,seed,status
+red1,red,Standard OFDM,standard,3,19200,19200,1,0,0,170,36,0.211764705882,0,0.003315654,0.003315654,0,20260715,ok
+red1,red,Partial FFT+FEC,pfft,3,19200,19200,1,0,0,170,51,0.3,0,0.003100416,0.003100416,0,20260715,ok
+red1,red,JUNA-Lite,lite,3,19200,19200,1,0,0,170,51,0.3,0,0.008962618,0.008962618,0,20260715,ok
+red1,red,JUNA-Wz,full,3,19200,19200,1,0,0,170,47,0.276470588235,0,0.073431809,0.073431809,0,20260715,ok
+red1,red,JUNA-WCz,coupled,3,19200,19200,1,0,0,170,47,0.276470588235,0,0.013289522,0.013289522,0,20260715,ok
