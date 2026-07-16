@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the five-receiver measured-channel matrix in README.md."""
+"""Generate the measured-channel performance section in README.md."""
 
 import argparse
 import csv
@@ -43,9 +43,37 @@ def cell_details(row: dict, config: dict) -> str:
     return "<br>".join(html.escape(item) for item in items)
 
 
+def frame_wide_table(configs: list[dict]) -> list[str]:
+    if len(configs) != 12:
+        raise ValueError(f"frame-wide report must contain 12 rows, got {len(configs)}")
+    if any(row["status"] != "ok" for row in configs):
+        failed = [row["channel"] for row in configs if row["status"] != "ok"]
+        raise ValueError(f"frame-wide report contains failed rows: {failed}")
+    if len({row["channel"] for row in configs}) != len(configs):
+        raise ValueError("frame-wide report contains duplicate channels")
+
+    lines = [
+        "### JUNA Frame-wide LDPC vs paper target (20 dB, full capture)", "",
+        "| site | channel | accepted | PSR | BER | rate (bit/s) | mean decode/frame | paper target PSR | paper target rate | ΔPSR |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in configs:
+        delta = float(row["psr"]) - float(row["target_psr"])
+        lines.append(
+            f"| {row['label']} | `{row['channel']}` | "
+            f"{row['accepted_packets']}/{row['decoded_packets']} | "
+            f"**{fmt_psr(row['psr'])}** | {fmt_ber(row['ber'])} | "
+            f"{float(row['effective_rate_bps']):.0f} | "
+            f"{float(row['mean_decode_seconds']):.3f} s | "
+            f"{fmt_psr(row['target_psr'])} | "
+            f"{float(row['target_rate_bps']):.0f} | {delta:+.3f} |"
+        )
+    return lines
+
+
 def render(repo: Path) -> str:
     sweep = rows(repo / "reports" / "all_channels_snr_sweep.csv")
-    configs = rows(repo / "reports" / "paper_frame_wide_all_channels_full_20db.csv")
+    configs = rows(repo / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv")
     by_key = {(row["channel"], int(float(row["snr_db"])), row["algorithm"]): row for row in sweep}
     required = {(config["channel"], snr, algorithm)
                 for config in configs for snr in SNRS for algorithm in ALGORITHMS}
@@ -53,10 +81,28 @@ def render(repo: Path) -> str:
     if missing:
         raise ValueError(f"incomplete receiver matrix; missing {missing[:5]}")
 
-    lines = [BEGIN, "## Five-receiver comparison", "",
-             "Headline values are **PSR / BER at 20 dB**. Click a cell to reveal its "
-             "configuration, sample rates, packet count, seed, decode time, and bit errors. "
-             "Expand a site below the table to compare every SNR configuration.", "",
+    lines = [
+        BEGIN,
+        "## Measured-channel performance", "",
+        "The headline result is **JUNA Frame-wide LDPC** with Rpchan-compatible "
+        "framing, pilots, code construction, preamble acquisition, and one LDPC "
+        "codeword spanning each OFDM frame. Each row uses the channel's declared "
+        "sample rate and its paper configuration at 20 dB.", "",
+    ]
+    lines += frame_wide_table(configs)
+    lines += [
+             "", "<details>",
+             "<summary><b>Per-symbol receiver diagnostic sweep (different experiment)</b></summary>", "",
+             "These values are **not directly comparable** with the frame-wide table. "
+             "This diagnostic does not include JUNA Frame-wide LDPC: it sends ten "
+             "independently coded packets per point through a shared known-waveform "
+             "replay, uses oracle alignment, and the modem rate equals the capture rate "
+             "instead of Rpchan's half-rate modem configuration. A packet succeeds only "
+             "when every payload bit is correct, so the measured BER values naturally "
+             "produce PSR 0/10 throughout this small diagnostic.", "",
+             "### Five per-symbol receivers at 20 dB", "",
+             "Each cell is **PSR / BER**. Click a cell to reveal its configuration, sample rates, "
+             "packet count, seed, decode time, and bit errors.", "",
              "| site | " + " | ".join(HEADERS) + " |",
              "|---|" + "---:|" * len(HEADERS)]
     for config in configs:
@@ -68,7 +114,7 @@ def render(repo: Path) -> str:
                          '</summary><sub>' + cell_details(row, config) + '</sub></details>')
         lines.append(f"| {config['label']} | " + " | ".join(cells) + " |")
 
-    lines += ["", "### All configurations", ""]
+    lines += ["", "### All per-symbol SNR configurations", ""]
     for config in configs:
         channel = config["channel"]
         lines += ["<details>",
@@ -81,8 +127,11 @@ def render(repo: Path) -> str:
             lines.append(f"| {snr} dB | " + " | ".join(cells) + " |")
         lines += ["", "</details>", ""]
 
-    lines += ["PSR = packet-success rate. BER = payload bit-error rate. "
-              "Source: [`reports/all_channels_snr_sweep.csv`](reports/all_channels_snr_sweep.csv).",
+    lines += ["</details>", "",
+              "PSR = packet-success rate. BER = payload bit-error rate. Sources: "
+              "[`reports/paper_frame_wide_all_channels_stateful_full_20db.csv`]"
+              "(reports/paper_frame_wide_all_channels_stateful_full_20db.csv) and "
+              "[`reports/all_channels_snr_sweep.csv`](reports/all_channels_snr_sweep.csv).",
               END]
     return "\n".join(lines)
 
