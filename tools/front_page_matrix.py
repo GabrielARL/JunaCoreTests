@@ -18,6 +18,7 @@ CODE_RATES = (
     (0.25, "1/4"),
     (0.5, "1/2"),
 )
+FFT_SIZES = (512, 1024, 2048)
 
 
 def rows(path: Path) -> list[dict]:
@@ -100,18 +101,22 @@ def commit_history_table(history: list[dict]) -> list[str]:
         if commit not in commits:
             commits.append(commit)
         rate = float(row["code_rate"])
+        nfft = int(row["nfft"])
         code_rate_label(row["code_rate"])
-        results = grouped.setdefault((commit, rate), {})
+        if nfft not in FFT_SIZES:
+            raise ValueError(f"unsupported commit-history FFT size: {nfft}")
+        results = grouped.setdefault((commit, rate, nfft), {})
         if row["algorithm"] in results:
             raise ValueError(
-                f"commit {commit[:7]} rate {rate} contains duplicate "
+                f"commit {commit[:7]} rate {rate} N={nfft} contains duplicate "
                 f"{row['algorithm']} results")
         results[row["algorithm"]] = row
 
     lines = [
         "This main comparison fixes SG-1, 20 dB, seed 1, and uses one independently "
         "coded packet and one OFDM block per case. Each commit therefore records "
-        f"{len(CODE_RATES) * len(ALGORITHMS)} measured cases. Each receiver cell is "
+        f"{len(FFT_SIZES) * len(CODE_RATES) * len(ALGORITHMS)} measured cases. "
+        "The sweep uses N={512, 1024, 2048} with CP=16. Each receiver cell is "
         "**PSR / BER / mean decode time per block**. With one block, PSR is necessarily "
         "binary; BER carries the finer error information. Click a cell to reveal the "
         "geometry, sample rates, payload size, and bit errors.", "",
@@ -123,30 +128,30 @@ def commit_history_table(history: list[dict]) -> list[str]:
             raise ValueError(f"JunaCore commit must be a full 40-character SHA: {commit}")
         link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
         for rate, label in CODE_RATES:
-            results = grouped.get((commit, rate), {})
-            missing = sorted(set(ALGORITHMS) - set(results))
-            extra = sorted(set(results) - set(ALGORITHMS))
-            if missing or extra:
-                raise ValueError(
-                    f"commit {commit[:7]} rate {label} has incomplete receiver results; "
-                    f"missing={missing}, extra={extra}")
-            if any(row["channel"] != "red1" or float(row["snr_db"]) != 20 or
-                   int(row["packets"]) != 1 for row in results.values()):
-                raise ValueError(
-                    f"commit {commit[:7]} rate {label} mixes benchmark configurations")
-            if any(row["status"] != "ok" for row in results.values()):
-                raise ValueError(
-                    f"commit {commit[:7]} rate {label} contains a failed benchmark")
-            nfft_values = {int(row["nfft"]) for row in results.values()}
-            if len(nfft_values) != 1:
-                raise ValueError(
-                    f"commit {commit[:7]} rate {label} mixes FFT sizes: "
-                    f"{sorted(nfft_values)}")
+            for nfft in FFT_SIZES:
+                results = grouped.get((commit, rate, nfft), {})
+                missing = sorted(set(ALGORITHMS) - set(results))
+                extra = sorted(set(results) - set(ALGORITHMS))
+                if missing or extra:
+                    raise ValueError(
+                        f"commit {commit[:7]} rate {label} N={nfft} has incomplete "
+                        f"receiver results; missing={missing}, extra={extra}")
+                if any(row["channel"] != "red1" or
+                       float(row["snr_db"]) != 20 or
+                       int(row["packets"]) != 1 or int(row["cp"]) != 16 or
+                       int(row["nfft"]) != nfft for row in results.values()):
+                    raise ValueError(
+                        f"commit {commit[:7]} rate {label} N={nfft} mixes "
+                        "benchmark configurations")
+                if any(row["status"] != "ok" for row in results.values()):
+                    raise ValueError(
+                        f"commit {commit[:7]} rate {label} N={nfft} contains "
+                        "a failed benchmark")
 
-            cells = [history_cell(results[algorithm]) for algorithm in ALGORITHMS]
-            nfft = next(iter(nfft_values))
-            lines.append(
-                f"| {link} | {label} | {nfft} | " + " | ".join(cells) + " |")
+                cells = [history_cell(results[algorithm]) for algorithm in ALGORITHMS]
+                lines.append(
+                    f"| {link} | {label} | {nfft} | " +
+                    " | ".join(cells) + " |")
     return lines
 
 

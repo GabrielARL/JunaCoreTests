@@ -38,7 +38,9 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("| JunaCore commit | code rate | N | Standard OFDM | Partial FFT + FEC | JUNA-Lite | JUNA-Wz | JUNA-WCz |", text)
         for code_rate in ("1/16", "1/8", "1/4", "1/2"):
             self.assertIn(f"| {code_rate} |", text)
-        self.assertIn("| 1/16 | 1024 |", text)
+        for nfft in ("512", "1024", "2048"):
+            self.assertIn(f"| 1/16 | {nfft} |", text)
+        self.assertIn("60 measured cases", text)
         self.assertIn("one independently coded packet and one OFDM block", text)
         self.assertIn("PSR / BER / mean decode time per block", text)
         self.assertIn("0a2d927", text)
@@ -79,10 +81,13 @@ class FrontPageMatrixContract(unittest.TestCase):
 
         with HISTORY.open(encoding="utf-8") as stream:
             history_rows = list(csv.DictReader(stream))
-        self.assertGreaterEqual(len(history_rows), 20)
-        self.assertEqual(len(history_rows) % 20, 0)
+        self.assertGreaterEqual(len(history_rows), 60)
+        self.assertEqual(len(history_rows) % 60, 0)
         self.assertEqual({row["channel"] for row in history_rows}, {"red1"})
         self.assertEqual({row["snr_db"] for row in history_rows}, {"20"})
+        self.assertEqual({row["nfft"] for row in history_rows},
+                         {"512", "1024", "2048"})
+        self.assertEqual({row["cp"] for row in history_rows}, {"16"})
         self.assertEqual({row["code_rate"] for row in history_rows},
                          {"0.0625", "0.125", "0.25", "0.5"})
         self.assertEqual({row["packets"] for row in history_rows}, {"1"})
@@ -91,22 +96,25 @@ class FrontPageMatrixContract(unittest.TestCase):
                             for row in history_rows))
         for commit in {row["juna_core_commit"] for row in history_rows}:
             for code_rate in ("0.0625", "0.125", "0.25", "0.5"):
-                commit_rows = [
-                    row for row in history_rows
-                    if row["juna_core_commit"] == commit and
-                    row["code_rate"] == code_rate
-                ]
-                self.assertEqual(len(commit_rows), 5)
-                self.assertEqual({row["algorithm"] for row in commit_rows}, algorithms)
-                for row in commit_rows:
-                    self.assertAlmostEqual(
-                        float(row["psr"]),
-                        int(row["successful_packets"]) / int(row["packets"]),
-                    )
-                    self.assertAlmostEqual(
-                        float(row["ber"]),
-                        int(row["bit_errors"]) / int(row["payload_bits"]),
-                    )
+                for nfft in ("512", "1024", "2048"):
+                    commit_rows = [
+                        row for row in history_rows
+                        if row["juna_core_commit"] == commit and
+                        row["code_rate"] == code_rate and
+                        row["nfft"] == nfft
+                    ]
+                    self.assertEqual(len(commit_rows), 5)
+                    self.assertEqual({row["algorithm"] for row in commit_rows},
+                                     algorithms)
+                    for row in commit_rows:
+                        self.assertAlmostEqual(
+                            float(row["psr"]),
+                            int(row["successful_packets"]) / int(row["packets"]),
+                        )
+                        self.assertAlmostEqual(
+                            float(row["ber"]),
+                            int(row["bit_errors"]) / int(row["payload_bits"]),
+                        )
 
 
 if __name__ == "__main__":

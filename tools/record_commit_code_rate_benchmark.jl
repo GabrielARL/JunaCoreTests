@@ -7,6 +7,8 @@ include(joinpath(@__DIR__, "receiver_channel_benchmark.jl"))
 const CommitRateBenchmark = Main.ReceiverChannelBenchmark
 
 const CODE_RATES = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
+const FFT_SIZES = (512, 1024, 2048)
+const CYCLIC_PREFIX = 16
 const HISTORY_COLUMNS = (
     :juna_core_commit,
     :channel,
@@ -61,14 +63,14 @@ end
 csv_value(value::AbstractFloat) = @sprintf("%.12g", value)
 csv_value(value) = string(value)
 
-function history_row(commit, code_rate, row)
+function history_row(commit, nfft, code_rate, row)
     (
         juna_core_commit=commit,
         channel=row.channel,
         snr_db=row.snr_db,
         code_rate=code_rate,
-        nfft=1024,
-        cp=16,
+        nfft=nfft,
+        cp=CYCLIC_PREFIX,
         modem_fs=row.modem_fs,
         capture_fs=row.capture_fs,
         algorithm=row.algorithm,
@@ -118,7 +120,7 @@ function main(args=ARGS)
     CommitRateBenchmark._validate_capture_rate(channel, capture)
 
     fresh_rows = NamedTuple[]
-    for code_rate in CODE_RATES
+    for code_rate in CODE_RATES, nfft in FFT_SIZES
         rows = CommitRateBenchmark.benchmark_capture(
             capture;
             channel_id="red1",
@@ -128,13 +130,16 @@ function main(args=ARGS)
             seed=1,
             modem_fs=:capture,
             modem_profile=:default,
+            nfft=nfft,
+            cp=CYCLIC_PREFIX,
             code_rate=code_rate,
             warmup=true,
         )
-        append!(fresh_rows, history_row.(Ref(commit), Ref(code_rate), rows))
+        append!(fresh_rows,
+                history_row.(Ref(commit), Ref(nfft), Ref(code_rate), rows))
     end
 
-    length(fresh_rows) == length(CODE_RATES) *
+    length(fresh_rows) == length(FFT_SIZES) * length(CODE_RATES) *
                           length(CommitRateBenchmark.algorithm_descriptors()) ||
         error("incomplete code-rate benchmark")
     all(row -> row.status == "ok", fresh_rows) ||

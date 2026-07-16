@@ -12,15 +12,34 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         fc=25_000.0,
         receiver=3,
     )
-    expected_payload_bits = (
-        1 / 16 => 42,
-        1 / 8 => 85,
-        1 / 4 => 170,
-        1 / 2 => 340,
+    coded_bits_by_n = (
+        512 => 672,
+        1024 => 1360,
+        2048 => 2720,
     )
+    code_rates = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
 
-    for (code_rate, payload_bits) in expected_payload_bits
-        @testset "rate $code_rate" begin
+    for (nfft, coded_bits) in coded_bits_by_n, code_rate in code_rates
+        @testset "N=$nfft rate=$code_rate" begin
+            information_bits = round(Int, code_rate * coded_bits)
+            payload_bits = information_bits - cld(information_bits, 2)
+            receivers, shared_payload = CodeRateBenchmark._receiver_set(
+                CodeRateBenchmark.algorithm_descriptors(),
+                capture.fc,
+                capture.fs;
+                modem_profile=:default,
+                nfft=nfft,
+                cp=16,
+                code_rate=code_rate,
+            )
+            @test shared_payload == payload_bits
+            for item in receivers
+                @test Int(item.receiver.nc) == nfft
+                @test Int(item.receiver.np) == 16
+                @test Int(item.receiver.ldpc_n) == coded_bits
+                @test Int(item.receiver.ldpc_k) == information_bits
+            end
+
             rows = CodeRateBenchmark.benchmark_capture(
                 capture;
                 channel_id="identity",
@@ -30,6 +49,8 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 seed=1,
                 modem_fs=:capture,
                 modem_profile=:default,
+                nfft=nfft,
+                cp=16,
                 code_rate=code_rate,
                 warmup=false,
             )
@@ -56,6 +77,10 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         capture; packets=1, code_rate=0.0, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, code_rate=1 / 7, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, nfft=1000, cp=16, code_rate=1 / 4, warmup=false)
+    @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
+        capture; packets=1, nfft=512, cp=512, code_rate=1 / 4, warmup=false)
 end
 
 println("commit code-rate benchmark checks passed")

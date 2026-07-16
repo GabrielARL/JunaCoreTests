@@ -525,8 +525,38 @@ function _configure_code_rate!(receiver, code_rate)
     receiver
 end
 
+function _configure_fft_geometry!(receiver, fs::Real, nfft, cp)
+    nfft === nothing && cp === nothing && return receiver
+    nfft === nothing || nfft isa Integer ||
+        throw(ArgumentError("FFT size must be an integer"))
+    cp === nothing || cp isa Integer ||
+        throw(ArgumentError("cyclic-prefix length must be an integer"))
+    N = nfft === nothing ? Int(receiver.nc) : Int(nfft)
+    L = cp === nothing ? Int(receiver.np) : Int(cp)
+    2 < N <= typemax(UInt16) && count_ones(N) == 1 ||
+        throw(ArgumentError("FFT size must be a UInt16-representable power of two"))
+    0 <= L < N ||
+        throw(ArgumentError("cyclic-prefix length must satisfy 0 <= CP < N"))
+
+    original_rate = Int(receiver.ldpc_k) / Int(receiver.ldpc_n)
+    receiver.nc = UInt16(N)
+    receiver.np = UInt16(L)
+    receiver.layout = nothing
+    layout = Juna._layout(receiver, fs)
+    coded_capacity = Int(receiver.bpc) * length(layout.data_idx)
+    block_n = coded_capacity - mod(coded_capacity, 16)
+    block_n >= 16 || throw(ArgumentError(
+        "FFT geometry has insufficient coded-bit capacity"))
+    block_k = round(Int, original_rate * block_n)
+    receiver.ldpc_n = block_n
+    receiver.ldpc_k = block_k
+    receiver.code = nothing
+    receiver.bp_scratch = nothing
+    receiver
+end
+
 function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
-                           code_rate=nothing)
+                           nfft=nothing, cp=nothing, code_rate=nothing)
     profile = select_modem_profile(modem_profile)
     Modulations.init(receiver, fc, fs)
     if profile.id === :rpchan_winner
@@ -550,14 +580,17 @@ function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
         receiver.layout = nothing
         receiver.bp_scratch = nothing
     end
+    _configure_fft_geometry!(receiver, fs, nfft, cp)
     _configure_code_rate!(receiver, code_rate)
 end
 
 function _receiver_set(algorithms, fc::Real, fs::Real;
-                       modem_profile=:default, code_rate=nothing)
+                       modem_profile=:default, nfft=nothing, cp=nothing,
+                       code_rate=nothing)
     receivers = map(algorithms) do descriptor
         receiver = _configure_modem!(
-            descriptor.factory(), fc, fs, modem_profile; code_rate=code_rate)
+            descriptor.factory(), fc, fs, modem_profile;
+            nfft=nfft, cp=cp, code_rate=code_rate)
         isvalid(receiver, fc, fs) ||
             throw(ArgumentError("$(descriptor.name) is invalid at fc=$fc, fs=$fs"))
         (descriptor=descriptor, receiver=receiver)
@@ -592,6 +625,9 @@ contains the public `demodulate` call only and follows an untimed warm-up.
 When `code_rate` is provided, the benchmark keeps the profile's coded block
 length and changes its information length only; the requested rate must be
 exactly representable by that block length.
+When `nfft` or `cp` is provided, the benchmark applies that actual OFDM
+geometry and fits the coded block length to the QPSK data-carrier capacity,
+rounded down to a multiple of 16 so the supported rate sweep stays exact.
 """
 function benchmark_capture(capture::ReplayCapture;
                            channel_id::AbstractString=capture.name,
@@ -601,6 +637,8 @@ function benchmark_capture(capture::ReplayCapture;
                            seed::Integer=1,
                            modem_fs=nothing,
                            modem_profile=:default,
+                           nfft=nothing,
+                           cp=nothing,
                            code_rate=nothing,
                            warmup::Bool=true)
     _validate_benchmark(packets, snr_db, seed)
@@ -613,11 +651,13 @@ function benchmark_capture(capture::ReplayCapture;
         "$(profile.id) requires packet count divisible by $frame_packets"))
     frame_count = div(packets, frame_packets)
     receivers, payload_per_packet = _receiver_set(
-        algorithms, fc, fs; modem_profile=profile.id, code_rate=code_rate,
+        algorithms, fc, fs; modem_profile=profile.id,
+        nfft=nfft, cp=cp, code_rate=code_rate,
     )
 
     transmitter = _configure_modem!(
-        Juna.LiteModulation(), fc, fs, profile.id; code_rate=code_rate)
+        Juna.LiteModulation(), fc, fs, profile.id;
+        nfft=nfft, cp=cp, code_rate=code_rate)
     Modulations.bitspersymbol(transmitter) == payload_per_packet ||
         throw(ArgumentError("transmitter and receivers disagree on payload geometry"))
 
