@@ -4,3 +4,8 @@ data/
 bench/latest.json
 ldpc-*.pchk
 ldpc-*.gen
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
