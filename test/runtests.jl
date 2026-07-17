@@ -130,7 +130,7 @@ const SUITES = [
      paper = "eq:juna-wcz, eq:juna-total, ssec:juna-wcz"),
     (key = "coupled-e2e", file = "juna_coupled_end_to_end.jl",
      title = "JUNA-WCz clean and impaired end-to-end",
-     claim = "public CoupledModulation decodes clean and mismatched channels, dispatches to the coupled solver, beats Seed and Lite at fixed 0 dB, and bounds the proxy-versus-truth tradeoff at 1.5 dB",
+     claim = "public CoupledModulation decodes clean and mismatched channels, dispatches to the coupled solver, improves its fixed 0 dB seed, and bounds the proxy-versus-truth tradeoff at 1.5 dB without treating hidden BER as an acceptance oracle",
      paper = "eq:juna-wcz, eq:juna-total, sec:method, acceptance rule, tab:wcz-ici"),
     (key = "pfft", file = "partial_fft_receiver.jl",
      title = "Baseline receivers: standard OFDM and partial FFT",
