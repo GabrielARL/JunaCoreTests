@@ -80,6 +80,60 @@ end
             @test resolved == expected
             @test isfile(resolved)
             @test filesize(resolved) > 0
+            has_private_path = occursin("/home/", String(read(resolved)))
+            @test !has_private_path
+        end
+    end
+
+    @testset "vendored helpers construct a code without machine-local files" begin
+        mktempdir() do dir
+            built = LDPCConstructionLDPC.build(
+                12,
+                24;
+                method="evencol",
+                dc=2,
+                no4cycle=true,
+                seed=12024002,
+                dir,
+            )
+
+            @test isfile(built.pchk)
+            @test size(built.H) == (12, 24)
+            @test size(built.gen) == (12, 12)
+            @test all(vec(sum(built.H; dims=1)) .>= 1)
+        end
+    end
+
+    @testset "generated helper seeds are range-safe and deterministic" begin
+        seed = LDPCConstructionJuna._ldpc_seed(340, 1360, 3)
+        @test seed == 10_001
+        @test 0 <= seed <= LDPCConstructionLDPC._MAX_TOOL_SEED
+        geometry_seeds = [
+            LDPCConstructionJuna._ldpc_seed(k, n, npc)
+            for (k, n, npc) in ((340, 1360, 3), (170, 1360, 3),
+                                (340, 2040, 3), (340, 1360, 4))
+        ]
+        @test length(unique(geometry_seeds)) == length(geometry_seeds)
+        @test all(0 .<= geometry_seeds .<= LDPCConstructionLDPC._MAX_TOOL_SEED)
+
+        @test_throws ArgumentError LDPCConstructionLDPC.build(
+            12,
+            24;
+            method="evencol",
+            dc=2,
+            seed=LDPCConstructionLDPC._MAX_TOOL_SEED + 1,
+        )
+
+        mktempdir() do first_dir
+            mktempdir() do second_dir
+                first = LDPCConstructionLDPC.build(
+                    340, 1360; method="evencol", dc=3, seed, dir=first_dir)
+                second = LDPCConstructionLDPC.build(
+                    340, 1360; method="evencol", dc=3, seed, dir=second_dir)
+                @test first.H == second.H
+                @test first.gen == second.gen
+                @test first.icols == second.icols
+            end
         end
     end
 

@@ -54,7 +54,7 @@ const SUITES = [
      paper = "implementation-level RF/baseband frequency contract"),
     (key = "ldpc", file = "ldpc_code_construction.jl",
      title = "LDPC code construction and cache",
-     claim = "LDPC helper tools, H/G dimensions, Tanner graph adjacency, GF(2) parity, and code-cache invalidation are sane before BP/JUNA use them; impossible dimensions and helper failures surface as deliberate ArgumentErrors",
+     claim = "vendored LDPC helpers run without machine-local files; range-safe geometry seeds reproduce identical H/G matrices, Tanner adjacency and GF(2) parity, while cache invalidation and helper failures remain deliberate",
      paper = "fig:packet-tanner-example (670-679), sec:solver (843), config string (1966-1971)"),
     (key = "framing", file = "message_framing_and_encoding.jl",
      title = "Message framing and LDPC encoding",
