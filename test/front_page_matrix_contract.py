@@ -14,6 +14,7 @@ SWEEP = ROOT / "reports" / "all_channels_snr_sweep.csv"
 FRAME_WIDE = ROOT / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv"
 HISTORY = ROOT / "reports" / "sg1_20db_commit_history.csv"
 FRAME_HISTORY = ROOT / "reports" / "sg1_20db_frame_commit_history.csv"
+RPCHAN_BASELINE = ROOT / "reports" / "sg1_rpchan_pinned_five_algorithms_20db.csv"
 RANKINGS = {
     "psr": ROOT / "reports" / "sg1_20db_ranked_by_psr.md",
     "ber": ROOT / "reports" / "sg1_20db_ranked_by_ber.md",
@@ -76,13 +77,20 @@ class FrontPageMatrixContract(unittest.TestCase):
             self.assertIn(f"| 0.25 | 1/16 | {nfft} |", text)
         self.assertIn("180 measured cases", text)
         self.assertIn("## True frame-wide receiver performance", text)
+        self.assertTrue(RPCHAN_BASELINE.is_file())
+        self.assertIn("### Pinned SG-1 Rpchan baseline", text)
+        self.assertIn("9.6 kHz modem / 19.2 kHz capture", text)
+        self.assertIn("outer 1/5, inner 1/10", text)
+        self.assertIn("packet PSR / exact-frame PSR / BER", text)
+        self.assertEqual(
+            text.count('<details class="rpchan-frame-cell-details">'), 5)
         self.assertIn("10 OFDM blocks share one LDPC codeword", text)
         self.assertIn("PSR / mean BER / mean decode time per frame / effective data rate", text)
         self.assertEqual(
             text.count("| JunaCore commit | Pilot Ratio | code rate | N | "
                        "Standard OFDM | Partial FFT + FEC | JUNA-Lite | "
                        "JUNA-Wz | JUNA-WCz |"),
-            2,
+            3,
         )
         self.assertIn(
             "[highest PSR](reports/sg1_20db_ranked_by_psr.md)", text)

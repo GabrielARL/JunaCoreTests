@@ -1,4 +1,5 @@
-.PHONY: test list contract roundtrip record-frame-benchmark front-page
+.PHONY: test list contract roundtrip record-frame-benchmark \
+	record-sg1-rpchan-baseline front-page
 
 JULIA ?= julia
 
@@ -16,6 +17,9 @@ roundtrip:
 
 record-frame-benchmark:
 	$(JULIA) --project=. tools/record_commit_frame_benchmark.jl
+
+record-sg1-rpchan-baseline:
+	$(JULIA) --project=. tools/record_sg1_rpchan_five_algorithms.jl
 
 front-page:
 	python3 tools/generate_sg1_rankings.py --repo . --out-dir reports

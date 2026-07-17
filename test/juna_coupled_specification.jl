@@ -95,6 +95,29 @@ function informative_coupled_problem()
     )
 end
 
+@testset "coupled coordinates preserve wrapped Rpchan carrier order" begin
+    active = [6, 7, 8, 2, 3, 4]
+    problem = CoupledSpecJuna._CoupledProblem(
+        zeros(ComplexF64, 2, 8);
+        active=active,
+        dc_index=1,
+        pilot_idx=[6, 2],
+        pilot_syms=ComplexF64[1, -1],
+        data_idx=[7, 8, 3, 4],
+        bands=[[6, 7, 8], [2, 3, 4]],
+        nbits=6,
+    )
+
+    @test problem.active == active
+    @test problem.pilot_idx == [6, 2]
+    @test problem.data_idx == [7, 8, 3, 4]
+    @test CoupledSpecJuna._coupled_active_slot(problem, 6) == 1
+    @test CoupledSpecJuna._coupled_active_slot(problem, 2) == 4
+    @test problem.fixed_symbols[6] == 1
+    @test problem.fixed_symbols[2] == -1
+    @test problem.symbol_slots[[7, 8, 3]] == [1, 2, 3]
+end
+
 function independent_coupled_symbols(problem, z)
     relaxed_bits = tanh.(Float64.(z) ./ 2)
     for bit_idx in eachindex(relaxed_bits)

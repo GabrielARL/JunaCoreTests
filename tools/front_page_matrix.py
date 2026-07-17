@@ -101,6 +101,37 @@ def frame_history_cell(row: dict) -> str:
             '</summary><sub>' + details + '</sub></details>')
 
 
+def rpchan_frame_cell(row: dict) -> str:
+    milliseconds = 1_000 * float(row["mean_decode_seconds_per_frame"])
+    effective_rate = float(row["effective_rate_bps"])
+    summary = (
+        f"pkt {fmt_psr(row['packet_psr'])} / "
+        f"frm {fmt_psr(row['frame_psr'])} / {fmt_ber(row['ber'])} / "
+        f"{milliseconds:.2f} ms / {effective_rate:.1f} bit/s"
+    )
+    items = [
+        f"channel: SG-1 ({row['channel']})", f"SNR: {row['snr_db']} dB",
+        "pinned pilots: outer=1/5 (0.20), inner=1/10 (0.10)",
+        "code: Rpchan systematic frame LDPC",
+        f"code rate: {float(row['fec_rate']):g}",
+        f"check degree: {row['check_degree']}",
+        f"N: {row['nfft']}", f"CP: {row['cp']}",
+        f"frame geometry: {row['frame_blocks']} OFDM blocks/codeword",
+        f"modem rate: {row['modem_fs']} samples/s",
+        f"capture rate: {row['capture_fs']} samples/s",
+        f"frames: {row['frames']}",
+        f"packets accepted: {row['accepted_packets']}/{row['decoded_packets']}",
+        f"exact frames: {row['successful_frames']}/{row['frames']}",
+        f"seed: {row['seed']}",
+        f"mean decode: {milliseconds:.2f} ms/frame",
+        f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
+        f"effective data rate: {effective_rate:.1f} bit/s",
+    ]
+    details = "<br>".join(html.escape(item) for item in items)
+    return ('<details class="rpchan-frame-cell-details"><summary>' + summary +
+            '</summary><sub>' + details + '</sub></details>')
+
+
 def code_rate_label(value: str) -> str:
     number = float(value)
     for expected, label in CODE_RATES:
@@ -330,12 +361,78 @@ def frame_commit_history_table(history: list[dict]) -> list[str]:
     return lines
 
 
+def rpchan_pinned_table(baseline: list[dict]) -> list[str]:
+    if len(baseline) != len(ALGORITHMS):
+        raise ValueError(
+            f"pinned SG-1 baseline must contain five rows, got {len(baseline)}")
+    by_algorithm = {row["algorithm"]: row for row in baseline}
+    if len(by_algorithm) != len(baseline):
+        raise ValueError("pinned SG-1 baseline contains duplicate algorithms")
+    missing = sorted(set(ALGORITHMS) - set(by_algorithm))
+    extra = sorted(set(by_algorithm) - set(ALGORITHMS))
+    if missing or extra:
+        raise ValueError(
+            f"pinned SG-1 receiver set is incomplete; missing={missing}, extra={extra}")
+
+    expected_profiles = {
+        "Standard OFDM": "standard",
+        "Partial FFT+FEC": "pfft",
+        "JUNA-Lite": "lite",
+        "JUNA-Wz": "full",
+        "JUNA-WCz": "coupled",
+    }
+    commits = {row["juna_core_commit"] for row in baseline}
+    if len(commits) != 1 or len(next(iter(commits))) != 40:
+        raise ValueError("pinned SG-1 baseline needs one full JunaCore commit")
+    for algorithm, row in by_algorithm.items():
+        exact = (
+            row["channel"] == "red1" and row["label"] == "SG-1" and
+            row["profile"] == expected_profiles[algorithm] and
+            int(row["receiver"]) == 3 and int(row["nfft"]) == 1024 and
+            int(row["cp"]) == 16 and int(row["outer_spacing"]) == 5 and
+            int(row["inner_spacing"]) == 10 and
+            float(row["fec_rate"]) == 0.5 and
+            int(row["check_degree"]) == 10 and
+            float(row["modem_fs"]) == 9_600 and
+            float(row["capture_fs"]) == 19_200 and
+            float(row["snr_db"]) == 20 and int(row["seed"]) == 51_001 and
+            int(row["frame_blocks"]) == 10 and
+            int(row["decoded_packets"]) == 360 and
+            int(row["frames"]) == 36 and row["status"] == "ok"
+        )
+        if not exact:
+            raise ValueError(
+                f"{algorithm} does not match the pinned SG-1 Rpchan contract")
+
+    commit = next(iter(commits))
+    link = f"[`{commit[:7]}`]({JUNA_CORE_COMMITS}/{commit})"
+    cells = [rpchan_frame_cell(by_algorithm[algorithm])
+             for algorithm in ALGORITHMS]
+    return [
+        "### Pinned SG-1 Rpchan baseline", "",
+        "This is the exact paper configuration: **9.6 kHz modem / 19.2 kHz "
+        "capture**, N=1024, CP=16, QPSK, rate-1/2 Rpchan frame LDPC with "
+        "degree 10, outer 1/5, inner 1/10, passband replay, preamble "
+        "acquisition, and Doppler search. One generated/noised sample vector "
+        "feeds all five decoders per frame. Each cell is **packet PSR / "
+        "exact-frame PSR / BER / mean decode time per frame / effective data "
+        "rate**.", "",
+        "| JunaCore commit | Pilot Ratio | code rate | N | " +
+        " | ".join(HEADERS) + " |",
+        "|---|---:|---:|---:|" + "---:|" * len(HEADERS),
+        f"| {link} | 0.30 (outer 0.20, inner 0.10) | 1/2 | 1024 | " +
+        " | ".join(cells) + " |",
+    ]
+
+
 def render(repo: Path) -> str:
     sweep = rows(repo / "reports" / "all_channels_snr_sweep.csv")
     configs = rows(repo / "reports" / "paper_frame_wide_all_channels_stateful_full_20db.csv")
     history = rows(repo / "reports" / "sg1_20db_commit_history.csv")
     frame_history = rows(
         repo / "reports" / "sg1_20db_frame_commit_history.csv")
+    rpchan_baseline = rows(
+        repo / "reports" / "sg1_rpchan_pinned_five_algorithms_20db.csv")
     by_key = {(row["channel"], int(float(row["snr_db"])), row["algorithm"]): row for row in sweep}
     required = {(config["channel"], snr, algorithm)
                 for config in configs for snr in SNRS for algorithm in ALGORITHMS}
@@ -346,6 +443,8 @@ def render(repo: Path) -> str:
     lines = [BEGIN, "## Commit-by-rate receiver performance", ""]
     lines += commit_history_table(history)
     lines += ["", "## True frame-wide receiver performance", ""]
+    lines += rpchan_pinned_table(rpchan_baseline)
+    lines += ["", "### Generic geometry sweep", ""]
     lines += frame_commit_history_table(frame_history)
     lines += [
         "",
@@ -387,7 +486,9 @@ def render(repo: Path) -> str:
               "Commit history: [`reports/sg1_20db_commit_history.csv`]"
               "(reports/sg1_20db_commit_history.csv). Frame history: "
               "[`reports/sg1_20db_frame_commit_history.csv`]"
-              "(reports/sg1_20db_frame_commit_history.csv).",
+              "(reports/sg1_20db_frame_commit_history.csv). Pinned five-receiver "
+              "baseline: [`reports/sg1_rpchan_pinned_five_algorithms_20db.csv`]"
+              "(reports/sg1_rpchan_pinned_five_algorithms_20db.csv).",
               END]
     return "\n".join(lines)
 

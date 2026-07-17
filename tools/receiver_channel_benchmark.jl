@@ -23,10 +23,12 @@ export ALGORITHM_DESCRIPTORS, FRAME_ALGORITHM_DESCRIPTORS,
        select_modem_profile, validate_report_rows, write_benchmark_csv,
        PAPER_FRAME_WIDE_CONFIG_DESCRIPTORS,
        PAPER_FRAME_WIDE_RESULT_COLUMNS,
+       PAPER_ALGORITHM_RESULT_COLUMNS,
        benchmark_paper_frame_wide_capture,
+       benchmark_paper_frame_wide_algorithms,
        paper_frame_wide_config_descriptors,
        run_paper_frame_wide_reproduction,
-       write_paper_frame_wide_csv
+       write_paper_algorithm_csv, write_paper_frame_wide_csv
 
 const DEFAULT_RECEIVER = 3
 
@@ -171,6 +173,39 @@ const PAPER_FRAME_WIDE_RESULT_COLUMNS = (
     :status,
 )
 
+const PAPER_ALGORITHM_RESULT_COLUMNS = (
+    :channel,
+    :label,
+    :algorithm,
+    :profile,
+    :receiver,
+    :nfft,
+    :cp,
+    :outer_spacing,
+    :inner_spacing,
+    :fec_rate,
+    :check_degree,
+    :modem_fs,
+    :capture_fs,
+    :snr_db,
+    :seed,
+    :frames,
+    :frame_blocks,
+    :decoded_packets,
+    :accepted_packets,
+    :packet_psr,
+    :successful_frames,
+    :frame_psr,
+    :payload_bits,
+    :bit_errors,
+    :ber,
+    :decode_failures,
+    :mean_decode_seconds_per_frame,
+    :total_decode_seconds,
+    :effective_rate_bps,
+    :status,
+)
+
 const RESULT_COLUMNS = (
     :channel,
     :color,
@@ -230,6 +265,19 @@ function _paper_frame_wide_modem(config, fc::Real, fs::Real)
     isvalid(receiver, fc, fs) || throw(ArgumentError(
         "$(config.id) paper frame-wide modem is invalid at fc=$fc, fs=$fs"))
     receiver
+end
+
+function _paper_frame_wide_receiver_set(config, algorithms, fc::Real, fs::Real)
+    map(algorithms) do descriptor
+        receiver = _paper_frame_wide_modem(config, fc, fs)
+        receiver.frame_receiver = descriptor.profile
+        receiver.code = nothing
+        receiver.layout = nothing
+        receiver.bp_scratch = nothing
+        isvalid(receiver, fc, fs) || throw(ArgumentError(
+            "$(descriptor.name) is invalid for the $(config.label) paper configuration"))
+        (descriptor=descriptor, receiver=receiver)
+    end
 end
 
 function _select(values, descriptors, kind::String)
@@ -548,6 +596,135 @@ function benchmark_paper_frame_wide_capture(
         ber_delta=ber - config.target_ber,
         status=status,
     )
+end
+
+"""
+    benchmark_paper_frame_wide_algorithms(capture, config; ...)
+
+Compare the five named frame-wide receiver profiles under one pinned paper
+configuration. Each frame is transmitted, replayed through the passband
+adapter, and noised once before identical sample copies are decoded by every
+profile. `packet_psr` follows Rpchan's re-encoded packet rule; `frame_psr`
+requires the complete multi-packet payload to be exact.
+"""
+function benchmark_paper_frame_wide_algorithms(
+        capture::ReplayCapture, config;
+        decoded_packets::Integer=config.target_decoded_packets,
+        algorithms=FRAME_ALGORITHM_DESCRIPTORS,
+        snr_db::Real=20.0,
+        seed::Integer=51_001,
+        warmup::Bool=true,
+        channel_adapter::Function=_paper_replay_adapter)
+    _validate_benchmark(decoded_packets, snr_db, seed)
+    isempty(algorithms) && throw(ArgumentError("select at least one frame algorithm"))
+    isapprox(capture.fs, config.capture_fs; rtol=0, atol=eps(config.capture_fs)) ||
+        throw(ArgumentError(
+            "$(config.id) capture fs=$(capture.fs), expected $(config.capture_fs)"))
+    isapprox(capture.fc, config.carrier_hz; rtol=0, atol=eps(config.carrier_hz)) ||
+        throw(ArgumentError(
+            "$(config.id) carrier fc=$(capture.fc), expected $(config.carrier_hz)"))
+
+    fc = Float64(config.carrier_hz)
+    fs = Float64(config.modem_fs)
+    receivers = _paper_frame_wide_receiver_set(config, algorithms, fc, fs)
+    transmitter = _paper_frame_wide_modem(config, fc, fs)
+    transmitter.frame_receiver = :standard
+    packet_counts = _paper_frame_packet_counts(decoded_packets)
+    maximum(packet_counts) == 10 || throw(ArgumentError(
+        "paper algorithm comparison expects frames of at most ten packets"))
+    Juna._frame_payload_capacity(transmitter, 10) == config.payload_bits_per_frame ||
+        throw(ArgumentError("$(config.id) frame payload geometry drifted"))
+
+    warm_payload = falses(Juna._frame_payload_capacity(
+        transmitter, maximum(packet_counts)))
+    warm_waveform = Modulations.modulate(transmitter, warm_payload, fc, fs)
+    for item in receivers
+        item.receiver.code = transmitter.code
+        item.receiver.layout = transmitter.layout
+        item.receiver.bp_scratch = nothing
+    end
+    warmup && _warm_frame_receivers!(
+        receivers, warm_waveform, length(warm_payload), fc, fs)
+    snapshots = _snapshot_positions(
+        capture, length(packet_counts), length(warm_waveform), fs)
+
+    accepted = zeros(Int, length(receivers))
+    successful_frames = zeros(Int, length(receivers))
+    bit_errors = zeros(Int, length(receivers))
+    failures = zeros(Int, length(receivers))
+    decode_samples = [Float64[] for _ in receivers]
+    errors = fill("", length(receivers))
+    payload_bits = 0
+
+    for (frame, packet_count) in pairs(packet_counts)
+        rng = MersenneTwister(Int(seed) + frame - 1)
+        frame_payload_bits = Juna._frame_payload_capacity(
+            transmitter, packet_count)
+        payload = rand(rng, Bool, frame_payload_bits)
+        transmitted = Modulations.modulate(transmitter, payload, fc, fs)
+        replayed = channel_adapter(
+            capture, transmitted; snapshot=snapshots[frame], modem_fs=fs)
+        received = _add_awgn(replayed, snr_db, rng)
+        payload_bits += frame_payload_bits
+
+        for (index, item) in pairs(receivers)
+            started = time_ns()
+            try
+                metrics, _ = Modulations.demodulate(
+                    item.receiver, frame_payload_bits, copy(received), fc, fs)
+                length(metrics) == frame_payload_bits || throw(DimensionMismatch(
+                    "decoder returned $(length(metrics)) metrics, expected $frame_payload_bits"))
+                decisions = metrics .> 0
+                frame_errors = count(decisions .!= payload)
+                bit_errors[index] += frame_errors
+                successful_frames[index] += iszero(frame_errors)
+                accepted[index] += _paper_packet_success_count(
+                    item.receiver, payload, decisions, packet_count)
+            catch exception
+                failures[index] += 1
+                bit_errors[index] += frame_payload_bits
+                isempty(errors[index]) &&
+                    (errors[index] = sprint(
+                        showerror, exception; context=:compact => true))
+            finally
+                push!(decode_samples[index], (time_ns() - started) / 1e9)
+            end
+        end
+    end
+
+    decoded = Int(decoded_packets)
+    frame_count = length(packet_counts)
+    duration_s = length(capture.phase) / capture.fs
+    nominal_packet_payload = config.payload_bits_per_frame / 10
+    map(eachindex(receivers)) do index
+        descriptor = receivers[index].descriptor
+        timing = _timing_summary(decode_samples[index])
+        status = failures[index] == 0 ? "ok" :
+                 "$(failures[index]) frame decode failure(s): $(errors[index])"
+        (
+            channel=String(config.id), label=String(config.label),
+            algorithm=String(descriptor.name), profile=String(descriptor.profile),
+            receiver=capture.receiver, nfft=config.nfft, cp=config.cp,
+            outer_spacing=config.outer_spacing,
+            inner_spacing=config.inner_spacing,
+            fec_rate=Float64(config.fec_rate), check_degree=config.dc,
+            modem_fs=fs, capture_fs=capture.fs,
+            snr_db=Float64(snr_db), seed=Int(seed), frames=frame_count,
+            frame_blocks=10, decoded_packets=decoded,
+            accepted_packets=accepted[index],
+            packet_psr=accepted[index] / decoded,
+            successful_frames=successful_frames[index],
+            frame_psr=successful_frames[index] / frame_count,
+            payload_bits=payload_bits, bit_errors=bit_errors[index],
+            ber=bit_errors[index] / payload_bits,
+            decode_failures=failures[index],
+            mean_decode_seconds_per_frame=timing.mean,
+            total_decode_seconds=timing.total,
+            effective_rate_bps=
+                accepted[index] * nominal_packet_payload / duration_s,
+            status=status,
+        )
+    end
 end
 
 function _validate_capture_rate(channel, capture::ReplayCapture)
@@ -1303,6 +1480,19 @@ function write_paper_frame_wide_csv(path::AbstractString, rows)
         for row in rows
             println(io, join((_csv_value(getproperty(row, column))
                               for column in PAPER_FRAME_WIDE_RESULT_COLUMNS), ','))
+        end
+    end
+    abspath(path)
+end
+
+function write_paper_algorithm_csv(path::AbstractString, rows)
+    isempty(path) && throw(ArgumentError("CSV path must not be empty"))
+    mkpath(dirname(abspath(path)))
+    open(path, "w") do io
+        println(io, join(string.(PAPER_ALGORITHM_RESULT_COLUMNS), ','))
+        for row in rows
+            println(io, join((_csv_value(getproperty(row, column))
+                              for column in PAPER_ALGORITHM_RESULT_COLUMNS), ','))
         end
     end
     abspath(path)
