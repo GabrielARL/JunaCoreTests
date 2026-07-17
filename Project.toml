@@ -1,3 +1,7 @@
+name = "JunaCoreTests"
+uuid = "d712eab8-1446-442c-b644-23d39f81c57d"
+version = "0.1.0"
+
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"

@@ -32,6 +32,24 @@ const INPUT_ROBUSTNESS_FS = 24_000.0
 input_robustness_payload(n::Integer) =
     Bool[isodd(count_ones(43i + 5)) for i in 1:Int(n)]
 
+function compact_frame_rls_robustness_receiver(; kwargs...)
+    defaults = (
+        nc=128,
+        np=16,
+        ldpc_k=24,
+        ldpc_n=48,
+        ldpc_npc=2,
+        partial_fft_parts=1,
+        partial_fft_nbands=2,
+        pilot_ratio=1 / 4,
+        inner_pilot_ratio=1 / 3,
+        rpchan_guard_s=0.0,
+        rpchan_doppler_steps=1,
+        rpchan_sync_max_lag=0,
+    )
+    JunaCore.JunaFrameRLS.Modulation(; merge(defaults, (; kwargs...))...)
+end
+
 function captured_exception(f)
     try
         f()
@@ -42,6 +60,38 @@ function captured_exception(f)
 end
 
 @testset verbose = true "JUNA public input robustness" begin
+    @testset "JUNA-FrameRLS facade rejects malformed public inputs" begin
+        m = compact_frame_rls_robustness_receiver()
+        fs = 9_600.0
+        blocks = 2
+        bits = input_robustness_payload(
+            InputRobustnessJuna._frame_payload_capacity(m, blocks))
+        waveform = InputRobustnessModulations.modulate(
+            m, bits, INPUT_ROBUSTNESS_FC, fs)
+
+        @test_throws ArgumentError InputRobustnessModulations.signallength(
+            m, length(bits), INPUT_ROBUSTNESS_FC, 0.0)
+        @test_throws ArgumentError InputRobustnessModulations.modulate(
+            m, bits, NaN, fs)
+        @test_throws ArgumentError InputRobustnessModulations.demodulate(
+            m, length(bits), @view(waveform[1:end-1]),
+            INPUT_ROBUSTNESS_FC, fs)
+
+        damaged = copy(waveform)
+        damaged[end] = ComplexF64(NaN, 0)
+        err = captured_exception() do
+            InputRobustnessModulations.demodulate(
+                m, length(bits), damaged, INPUT_ROBUSTNESS_FC, fs)
+        end
+        @test err isa ArgumentError
+        @test occursin("finite", lowercase(sprint(showerror, err)))
+
+        invalid = compact_frame_rls_robustness_receiver(nc=1000)
+        @test !isvalid(invalid, INPUT_ROBUSTNESS_FC, fs)
+        @test_throws ArgumentError InputRobustnessModulations.modulate(
+            invalid, bits, INPUT_ROBUSTNESS_FC, fs)
+    end
+
     @testset "frequency and payload-size arguments fail at the public boundary" begin
         bits = input_robustness_payload(170)
         tx = InputRobustnessJuna.LiteModulation()
@@ -191,13 +241,18 @@ end
             reference, payload, INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
         invalid_configs = (
             (name = "one pilot cannot train four branches", kwargs = (pilot_ratio = 1e-6,)),
-            (name = "pilot comb leaves fewer rows than branches", kwargs = (pilot_ratio = 1 / 17,)),
+            (name = "pilot comb leaves fewer rows than branches",
+             kwargs = (pilot_ratio = 1 / 17, partial_fft_nbands = 16)),
             (name = "column degree exceeds parity rows",
              kwargs = (ldpc_k = 679, ldpc_n = 680, ldpc_npc = 3)),
             (name = "zero LDPC column degree", kwargs = (ldpc_npc = 0,)),
             (name = "too many Partial-FFT views", kwargs = (partial_fft_parts = 17,)),
             (name = "more views than FFT samples", kwargs = (partial_fft_parts = 2048,)),
             (name = "bandwidth above Nyquist occupancy", kwargs = (bw = 1.5,)),
+            (name = "positive dc0 kHz shift exceeds Nyquist",
+             kwargs = (nc = 2048, np = 128, bw = 0.5, dc0 = 13)),
+            (name = "negative dc0 kHz shift exceeds Nyquist",
+             kwargs = (nc = 2048, np = 128, bw = 0.5, dc0 = -13)),
         )
 
         for descriptor in public_receiver_descriptors(), config in invalid_configs
@@ -222,7 +277,7 @@ end
         end
     end
 
-    @testset "silence and pure noise return finite deterministic metrics" begin
+    @testset "silence and pure noise have deterministic public outcomes" begin
         nbits = 127
         for (receiver_id, descriptor) in enumerate(public_receiver_descriptors())
             @testset "$(descriptor.name)" begin
@@ -237,6 +292,27 @@ end
 
                 for (name, waveform) in pairs(waveforms)
                     @testset "$name" begin
+                        if descriptor.mode === :frame_rls && name === :noise
+                            first_error = captured_exception() do
+                                InputRobustnessModulations.demodulate(
+                                    m, nbits, waveform,
+                                    INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
+                            end
+                            second_error = captured_exception() do
+                                InputRobustnessModulations.demodulate(
+                                    m, nbits, waveform,
+                                    INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
+                            end
+                            @test first_error isa ArgumentError
+                            @test typeof(second_error) === typeof(first_error)
+                            @test sprint(showerror, second_error) ==
+                                  sprint(showerror, first_error)
+                            @test occursin(
+                                "preamble alignment",
+                                lowercase(sprint(showerror, first_error)),
+                            )
+                            continue
+                        end
                         first_metrics, first_cfo = InputRobustnessModulations.demodulate(
                             m, nbits, waveform,
                             INPUT_ROBUSTNESS_FC, INPUT_ROBUSTNESS_FS)
@@ -247,7 +323,8 @@ end
                         @test length(first_metrics) == nbits
                         @test all(isfinite, first_metrics)
                         @test first_metrics == second_metrics
-                        @test first_cfo == second_cfo == 0.0
+                        @test isfinite(first_cfo)
+                        @test first_cfo == second_cfo
                     end
                 end
             end

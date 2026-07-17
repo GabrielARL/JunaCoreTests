@@ -133,6 +133,15 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertIn("requested split: inner=0.125, outer=0.125", text)
         self.assertIn("actual combs: inner=1/8, outer=1/8", text)
         self.assertIn("modem rate: 19200", text)
+        self.assertIn("channel bandwidth: 9600", text)
+        self.assertIn("requested modem bandwidth: 19200", text)
+        self.assertIn("effective occupied bandwidth: 9600", text)
+        self.assertIn("effective normalized bw: 0.5", text)
+        self.assertIn("bandwidth policy: min channel/modem", text)
+        self.assertIn("bandwidth policy: legacy uncapped", text)
+        self.assertIn("smaller of the Red channel and modem bandwidths", text)
+        self.assertIn(
+            "Historical rows retain their recorded bandwidth policy", text)
         self.assertIn("mean decode:", text)
         self.assertIn("mean decode: ", text)
         self.assertIn("ms/frame", text)
@@ -166,10 +175,12 @@ class FrontPageMatrixContract(unittest.TestCase):
 
         parsed = {metric: ranked_rows(path)
                   for metric, path in RANKINGS.items()}
+        with HISTORY.open(encoding="utf-8") as stream:
+            expected_count = sum(1 for _ in csv.DictReader(stream))
         for rows in parsed.values():
-            self.assertEqual(len(rows), 180)
+            self.assertEqual(len(rows), expected_count)
             self.assertEqual([row["rank"] for row in rows],
-                             list(range(1, 181)))
+                             list(range(1, expected_count + 1)))
 
         def identities(rows):
             return {
@@ -181,7 +192,7 @@ class FrontPageMatrixContract(unittest.TestCase):
             }
 
         expected_identities = identities(parsed["psr"])
-        self.assertEqual(len(expected_identities), 180)
+        self.assertEqual(len(expected_identities), expected_count)
         for rows in parsed.values():
             self.assertEqual(identities(rows), expected_identities)
 
@@ -251,6 +262,20 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertTrue(all(len(row["juna_core_commit"]) == 40 for row in history_rows))
         self.assertTrue(all(float(row["mean_decode_seconds_per_block"]) > 0
                             for row in history_rows))
+        self.assertEqual(
+            {row["bandwidth_policy"] for row in history_rows},
+            {"legacy_uncapped", "min_channel_modem"},
+        )
+        for row in history_rows:
+            requested = float(row["requested_modem_bandwidth_hz"])
+            channel = float(row["channel_bandwidth_hz"])
+            effective = float(row["effective_bandwidth_hz"])
+            normalized = float(row["effective_bw"])
+            if row["bandwidth_policy"] == "min_channel_modem":
+                self.assertEqual(effective, min(channel, requested))
+            else:
+                self.assertEqual(effective, requested)
+            self.assertEqual(normalized, effective / float(row["modem_fs"]))
         for commit in {row["juna_core_commit"] for row in history_rows}:
             for pilot_ratio in ("0.25", "0.5", "0.75"):
                 for code_rate in ("0.0625", "0.125", "0.25", "0.5"):
@@ -287,7 +312,8 @@ class FrontPageMatrixContract(unittest.TestCase):
 
         with FRAME_HISTORY.open(encoding="utf-8") as stream:
             frame_history = list(csv.DictReader(stream))
-        self.assertEqual(len(frame_history), 180)
+        self.assertGreaterEqual(len(frame_history), 180)
+        self.assertEqual(len(frame_history) % 180, 0)
         self.assertEqual({row["frame_blocks"] for row in frame_history}, {"10"})
         self.assertEqual({row["pilot_ratio"] for row in frame_history},
                          {"0.25", "0.5", "0.75"})
@@ -298,7 +324,25 @@ class FrontPageMatrixContract(unittest.TestCase):
         self.assertEqual({row["algorithm"] for row in frame_history},
                          algorithms)
         self.assertTrue(all(row["status"] == "ok" for row in frame_history))
+        self.assertEqual(
+            {row["bandwidth_policy"] for row in frame_history},
+            {"legacy_uncapped", "min_channel_modem"},
+        )
+        for commit in {row["juna_core_commit"] for row in frame_history}:
+            self.assertEqual(
+                sum(row["juna_core_commit"] == commit for row in frame_history),
+                180,
+            )
         for row in frame_history:
+            requested = float(row["requested_modem_bandwidth_hz"])
+            channel = float(row["channel_bandwidth_hz"])
+            effective = float(row["effective_bandwidth_hz"])
+            normalized = float(row["effective_bw"])
+            if row["bandwidth_policy"] == "min_channel_modem":
+                self.assertEqual(effective, min(channel, requested))
+            else:
+                self.assertEqual(effective, requested)
+            self.assertEqual(normalized, effective / float(row["modem_fs"]))
             self.assertAlmostEqual(
                 float(row["psr"]),
                 int(row["successful_frames"]) / int(row["frames"]),

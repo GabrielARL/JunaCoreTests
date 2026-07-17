@@ -81,7 +81,16 @@ end
     end
 
     @testset "public modulate wraps OFDM blocks with front and back sync" begin
-        for descriptor in public_receiver_descriptors()
+        lfm_receivers = filter(
+            descriptor -> descriptor.supports_lfm,
+            public_receiver_descriptors(),
+        )
+        @test length(lfm_receivers) == 6
+        @test only(filter(
+            descriptor -> !descriptor.supports_lfm,
+            public_receiver_descriptors(),
+        )).mode === :frame_rls
+        for descriptor in lfm_receivers
             @testset "$(descriptor.name)" begin
                 m = public_receiver(descriptor; sync = true)
                 nbits = SyncWaveformModulations.bitspersymbol(m)

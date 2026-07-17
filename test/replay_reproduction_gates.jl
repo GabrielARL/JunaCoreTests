@@ -226,7 +226,7 @@ end
         project = TOML.parsefile(joinpath(ReplayGateRoot, "Project.toml"))
         deps = get(project, "deps", Dict{String,Any}())
 
-        @test project["name"] == "JunaCore"
+        @test haskey(deps, "JunaCore")
         @test !haskey(deps, "ReplayCh")
         @test occursin("heavier measured-channel paper pipeline still lives", readme)
         @test occursin("Juna_replay_channel_1ch", readme)

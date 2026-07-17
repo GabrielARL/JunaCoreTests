@@ -111,8 +111,17 @@ const SYNTHETIC_CHANNEL_FS = 24_000.0
         )
     end
 
-    @testset "every receiver uses matched FEC on one physical-channel waterfall" begin
+    @testset "every compatible receiver uses matched FEC on one physical-channel waterfall" begin
         assert_public_receiver_catalog()
+        compatible_receivers = filter(
+            descriptor -> descriptor.supports_synthetic_uwa,
+            public_receiver_descriptors(),
+        )
+        @test length(compatible_receivers) == 6
+        @test only(filter(
+            descriptor -> !descriptor.supports_synthetic_uwa,
+            public_receiver_descriptors(),
+        )).mode === :frame_rls
         nbits = SyntheticChannelModulations.bitspersymbol(
             SyntheticChannelJuna.LiteModulation())
         profile = paper_channel_profile(SYNTHETIC_CHANNEL_FS; seed = 71)
@@ -123,7 +132,7 @@ const SYNTHETIC_CHANNEL_FS = 24_000.0
         payloads = [rand(payload_rng, Bool, nbits) for _ in 1:4]
         snrs = (20.0, 4.0, -2.0)
         @test maximum(abs.(scales)) > 0
-        for descriptor in public_receiver_descriptors()
+        for descriptor in compatible_receivers
             @testset "$(descriptor.name)" begin
                 receiver = public_receiver(descriptor)
                 trials = [begin

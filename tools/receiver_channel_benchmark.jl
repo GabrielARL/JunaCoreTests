@@ -216,6 +216,11 @@ const RESULT_COLUMNS = (
     :receiver,
     :modem_fs,
     :capture_fs,
+    :requested_modem_bw,
+    :requested_modem_bandwidth_hz,
+    :channel_bandwidth_hz,
+    :effective_bandwidth_hz,
+    :effective_bw,
     :packets,
     :successful_packets,
     :psr,
@@ -347,6 +352,36 @@ function _resolve_modem_fs(capture::ReplayCapture, requested)
     rate = Float64(requested)
     isfinite(rate) && rate > 0 || throw(ArgumentError("modem fs must be positive"))
     rate
+end
+
+function _effective_bandwidth_geometry(channel_bandwidth_hz::Real,
+                                       modem_fs::Real,
+                                       modem_bw::Real)
+    channel_width = Float64(channel_bandwidth_hz)
+    rate = Float64(modem_fs)
+    requested_bw = Float64(modem_bw)
+    isfinite(channel_width) && channel_width > 0 || throw(ArgumentError(
+        "channel bandwidth must be positive"))
+    isfinite(rate) && rate > 0 || throw(ArgumentError(
+        "modem fs must be positive"))
+    isfinite(requested_bw) && 0 < requested_bw <= 1 || throw(ArgumentError(
+        "modem bw must be finite and in (0, 1]"))
+    requested_width = requested_bw * rate
+    effective_width = min(channel_width, requested_width)
+    (
+        channel_bandwidth_hz=channel_width,
+        requested_modem_bw=requested_bw,
+        requested_modem_bandwidth_hz=requested_width,
+        effective_bandwidth_hz=effective_width,
+        normalized_bw=effective_width / rate,
+    )
+end
+
+function _effective_bandwidth_geometry(capture::ReplayCapture,
+                                       modem_fs::Real,
+                                       modem_bw::Real=1.0)
+    # Rpchan defines the maximum complex baseband profile as fs_delay / 2.
+    _effective_bandwidth_geometry(capture.fs / 2, modem_fs, modem_bw)
 end
 
 function _validate_rate_request(requested)
@@ -780,8 +815,9 @@ function _configure_code_rate!(receiver, code_rate)
     receiver
 end
 
-function _configure_fft_geometry!(receiver, fs::Real, nfft, cp)
-    nfft === nothing && cp === nothing && return receiver
+function _configure_fft_geometry!(receiver, fs::Real, nfft, cp;
+                                  refit_capacity::Bool=false)
+    nfft === nothing && cp === nothing && !refit_capacity && return receiver
     nfft === nothing || nfft isa Integer ||
         throw(ArgumentError("FFT size must be an integer"))
     cp === nothing || cp isa Integer ||
@@ -810,11 +846,27 @@ function _configure_fft_geometry!(receiver, fs::Real, nfft, cp)
     receiver
 end
 
+function _fit_partial_fft_bands!(receiver, fs::Real)
+    maximum_bands = min(Int(receiver.partial_fft_nbands), Int(receiver.nc))
+    for bands in maximum_bands:-1:1
+        receiver.partial_fft_nbands = bands
+        receiver.layout = nothing
+        layout = Juna._layout(receiver, fs)
+        Juna._pilot_training_sufficient(receiver, layout) && return receiver
+    end
+    throw(ArgumentError(
+        "pilot geometry cannot train even one partial-FFT band"))
+end
+
 function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
                            nfft=nothing, cp=nothing, code_rate=nothing,
-                           pilot_ratio=nothing)
+                           pilot_ratio=nothing, bw::Real=1.0)
     profile = select_modem_profile(modem_profile)
     Modulations.init(receiver, fc, fs)
+    isfinite(bw) && 0 < bw <= 1 || throw(ArgumentError(
+        "effective modem bw must be finite and in (0, 1]"))
+    receiver.bw = Float64(bw)
+    receiver.layout = nothing
     if profile.id === :rpchan_winner
         receiver.nc = UInt16(1024)
         receiver.np = UInt16(32)
@@ -837,18 +889,24 @@ function _configure_modem!(receiver, fc::Real, fs::Real, modem_profile;
         receiver.bp_scratch = nothing
     end
     _configure_pilot_budget!(receiver, pilot_ratio)
-    _configure_fft_geometry!(receiver, fs, nfft, cp)
+    _configure_fft_geometry!(
+        receiver, fs, nfft, cp; refit_capacity=Float64(bw) < 1.0)
     _configure_code_rate!(receiver, code_rate)
+    _fit_partial_fft_bands!(receiver, fs)
 end
 
 function _receiver_set(algorithms, fc::Real, fs::Real;
                        modem_profile=:default, nfft=nothing, cp=nothing,
-                       code_rate=nothing, pilot_ratio=nothing)
+                       code_rate=nothing, pilot_ratio=nothing,
+                       channel_bandwidth_hz::Real=fs,
+                       modem_bw::Real=1.0)
+    bandwidth = _effective_bandwidth_geometry(
+        channel_bandwidth_hz, fs, modem_bw)
     receivers = map(algorithms) do descriptor
         receiver = _configure_modem!(
             descriptor.factory(), fc, fs, modem_profile;
             nfft=nfft, cp=cp, code_rate=code_rate,
-            pilot_ratio=pilot_ratio)
+            pilot_ratio=pilot_ratio, bw=bandwidth.normalized_bw)
         isvalid(receiver, fc, fs) ||
             throw(ArgumentError("$(descriptor.name) is invalid at fc=$fc, fs=$fs"))
         (descriptor=descriptor, receiver=receiver)
@@ -865,9 +923,13 @@ function _frame_receiver_set(algorithms, fc::Real, fs::Real;
                              nfft=nothing,
                              cp=nothing,
                              code_rate=nothing,
-                             pilot_ratio=nothing)
+                             pilot_ratio=nothing,
+                             channel_bandwidth_hz::Real=fs,
+                             modem_bw::Real=1.0)
     blocks = Int(frame_blocks)
     blocks > 0 || throw(ArgumentError("frame block count must be positive"))
+    bandwidth = _effective_bandwidth_geometry(
+        channel_bandwidth_hz, fs, modem_bw)
     receivers = map(algorithms) do descriptor
         receiver = _configure_modem!(
             Juna.FrameWideLDPCModulation(
@@ -879,6 +941,7 @@ function _frame_receiver_set(algorithms, fc::Real, fs::Real;
             cp=cp,
             code_rate=code_rate,
             pilot_ratio=pilot_ratio,
+            bw=bandwidth.normalized_bw,
         )
         isvalid(receiver, fc, fs) || throw(ArgumentError(
             "$(descriptor.name) frame receiver is invalid at fc=$fc, fs=$fs"))
@@ -932,6 +995,9 @@ When `pilot_ratio` is provided, it is a total requested pilot budget split
 equally between inner message pilots and outer carrier pilots. Each half is
 snapped by JunaCore to its nearest realizable `1/k` comb before carrier
 capacity is fitted.
+The occupied bandwidth is `min(capture.fs / 2, modem_bw * modem_fs)`, matching
+Rpchan's maximum-baseband convention. The effective width is converted back to
+JunaCore's normalized `bw` and applied identically to transmitter and receivers.
 """
 function benchmark_capture(capture::ReplayCapture;
                            channel_id::AbstractString=capture.name,
@@ -945,6 +1011,7 @@ function benchmark_capture(capture::ReplayCapture;
                            cp=nothing,
                            code_rate=nothing,
                            pilot_ratio=nothing,
+                           modem_bw::Real=1.0,
                            full_capture::Bool=false,
                            warmup::Bool=true)
     full_capture && packets != 1 && throw(ArgumentError(
@@ -953,6 +1020,7 @@ function benchmark_capture(capture::ReplayCapture;
     isempty(algorithms) && throw(ArgumentError("select at least one algorithm"))
     fs = _resolve_modem_fs(capture, modem_fs)
     fc = capture.fc
+    bandwidth = _effective_bandwidth_geometry(capture, fs, modem_bw)
     profile = select_modem_profile(modem_profile)
     frame_packets = profile.frame_packets
     full_capture || packets % frame_packets == 0 || throw(ArgumentError(
@@ -960,11 +1028,14 @@ function benchmark_capture(capture::ReplayCapture;
     receivers, payload_per_packet = _receiver_set(
         algorithms, fc, fs; modem_profile=profile.id,
         nfft=nfft, cp=cp, code_rate=code_rate, pilot_ratio=pilot_ratio,
+        channel_bandwidth_hz=bandwidth.channel_bandwidth_hz,
+        modem_bw=bandwidth.requested_modem_bw,
     )
 
     transmitter = _configure_modem!(
         Juna.LiteModulation(), fc, fs, profile.id;
-        nfft=nfft, cp=cp, code_rate=code_rate, pilot_ratio=pilot_ratio)
+        nfft=nfft, cp=cp, code_rate=code_rate, pilot_ratio=pilot_ratio,
+        bw=bandwidth.normalized_bw)
     Modulations.bitspersymbol(transmitter) == payload_per_packet ||
         throw(ArgumentError("transmitter and receivers disagree on payload geometry"))
 
@@ -1053,6 +1124,12 @@ function benchmark_capture(capture::ReplayCapture;
             receiver=capture.receiver,
             modem_fs=fs,
             capture_fs=capture.fs,
+            requested_modem_bw=bandwidth.requested_modem_bw,
+            requested_modem_bandwidth_hz=
+                bandwidth.requested_modem_bandwidth_hz,
+            channel_bandwidth_hz=bandwidth.channel_bandwidth_hz,
+            effective_bandwidth_hz=bandwidth.effective_bandwidth_hz,
+            effective_bw=bandwidth.normalized_bw,
             packets=Int(packets),
             successful_packets=successful[index],
             psr=successful[index] / packets,
@@ -1094,6 +1171,7 @@ function benchmark_frame_capture(capture::ReplayCapture;
                                  cp=nothing,
                                  code_rate=nothing,
                                  pilot_ratio=nothing,
+                                 modem_bw::Real=1.0,
                                  full_capture::Bool=false,
                                  warmup::Bool=true)
     full_capture && frames != 1 && throw(ArgumentError(
@@ -1107,6 +1185,7 @@ function benchmark_frame_capture(capture::ReplayCapture;
         "select at least one frame algorithm"))
     fs = _resolve_modem_fs(capture, modem_fs)
     fc = capture.fc
+    bandwidth = _effective_bandwidth_geometry(capture, fs, modem_bw)
     profile = select_modem_profile(modem_profile)
     profile.id === :default || throw(ArgumentError(
         "true frame benchmark currently requires the default modem profile"))
@@ -1121,6 +1200,8 @@ function benchmark_frame_capture(capture::ReplayCapture;
         cp=cp,
         code_rate=code_rate,
         pilot_ratio=pilot_ratio,
+        channel_bandwidth_hz=bandwidth.channel_bandwidth_hz,
+        modem_bw=bandwidth.requested_modem_bw,
     )
     transmitter = _configure_modem!(
         Juna.FrameWideLDPCModulation(frame_receiver=:standard),
@@ -1131,6 +1212,7 @@ function benchmark_frame_capture(capture::ReplayCapture;
         cp=cp,
         code_rate=code_rate,
         pilot_ratio=pilot_ratio,
+        bw=bandwidth.normalized_bw,
     )
     Juna._frame_payload_capacity(transmitter, blocks) == payload_per_frame ||
         throw(ArgumentError(
@@ -1223,6 +1305,12 @@ function benchmark_frame_capture(capture::ReplayCapture;
             receiver=capture.receiver,
             modem_fs=fs,
             capture_fs=capture.fs,
+            requested_modem_bw=bandwidth.requested_modem_bw,
+            requested_modem_bandwidth_hz=
+                bandwidth.requested_modem_bandwidth_hz,
+            channel_bandwidth_hz=bandwidth.channel_bandwidth_hz,
+            effective_bandwidth_hz=bandwidth.effective_bandwidth_hz,
+            effective_bw=bandwidth.normalized_bw,
             frames=frame_count,
             frame_blocks=blocks,
             successful_frames=successful[index],
@@ -1257,6 +1345,9 @@ function _failed_rows(channel, algorithms, packets, snr_db, seed, modem_fs,
             algorithm=descriptor.name, profile=String(descriptor.profile),
             modem_profile=String(profile.id), frame_packets=profile.frame_packets,
             receiver=Int(receiver), modem_fs=requested_fs, capture_fs=NaN,
+            requested_modem_bw=NaN, requested_modem_bandwidth_hz=NaN,
+            channel_bandwidth_hz=NaN, effective_bandwidth_hz=NaN,
+            effective_bw=NaN,
             packets=Int(packets), successful_packets=0, psr=0.0,
             psr_ci95_low=psr_interval[1], psr_ci95_high=psr_interval[2],
             payload_bits=attempted_bits, bit_errors=attempted_bits, ber=1.0,
@@ -1442,6 +1533,20 @@ function validate_report_rows(rows; expected_rows=nothing, require_ok::Bool=fals
             throw(ArgumentError("row bit-error count is invalid"))
         0 <= row.ber <= 1 || throw(ArgumentError("row BER is outside [0,1]"))
         if row.status == "ok"
+            bandwidth = _effective_bandwidth_geometry(
+                row.channel_bandwidth_hz, row.modem_fs,
+                row.requested_modem_bw)
+            isapprox(row.requested_modem_bandwidth_hz,
+                     bandwidth.requested_modem_bandwidth_hz; rtol=0, atol=eps(
+                         bandwidth.requested_modem_bandwidth_hz)) ||
+                throw(ArgumentError("row requested modem bandwidth is inconsistent"))
+            isapprox(row.effective_bandwidth_hz,
+                     bandwidth.effective_bandwidth_hz; rtol=0, atol=eps(
+                         bandwidth.effective_bandwidth_hz)) ||
+                throw(ArgumentError("row effective bandwidth is inconsistent"))
+            isapprox(row.effective_bw, bandwidth.normalized_bw;
+                     rtol=0, atol=eps(bandwidth.normalized_bw)) ||
+                throw(ArgumentError("row normalized bandwidth is inconsistent"))
             times = (row.mean_decode_seconds, row.median_decode_seconds,
                      row.p95_decode_seconds, row.total_decode_seconds)
             all(value -> isfinite(value) && value >= 0, times) ||

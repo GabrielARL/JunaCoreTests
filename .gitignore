@@ -2,6 +2,8 @@ Manifest.toml
 logs/
 data/
 bench/latest.json
+bench/receiver_channel_runs.jsonl
+bench/receiver_channel_runs/
 ldpc-*.pchk
 ldpc-*.gen
 *.aux

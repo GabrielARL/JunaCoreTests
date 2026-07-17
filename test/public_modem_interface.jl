@@ -84,19 +84,9 @@ function direct_payload_metrics(m, code, candidate, nbits::Integer)
 end
 
 function direct_frame_paths(m, waveform, nbits::Integer)
-    blocks = PublicInterfaceJuna._frame_nblocks(m, nbits)
-    code = PublicInterfaceJuna._frame_code(m, blocks)
-    layout = PublicInterfaceJuna._layout(m, PUBLIC_INTERFACE_FS)
-    observations = Array{ComplexF64}(
-        undef, m.partial_fft_parts, Int(m.nc), blocks)
-    block_length = Int(m.nc) + Int(m.np)
-    for block in 1:blocks
-        lo = 1 + (block - 1) * block_length
-        hi = block * block_length
-        observations[:, :, block] .=
-            PublicInterfaceJuna._branch_observations(
-                m, @view waveform[lo:hi])
-    end
+    _, code, layout, blocks, observations, _ =
+        PublicInterfaceJuna._prepare_frame_observations(
+            m, nbits, waveform, PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS)
     standard = PublicInterfaceJuna._frame_static_trace(
         m, code, layout, observations, :standard).best
     partial = PublicInterfaceJuna._frame_static_trace(
@@ -147,8 +137,8 @@ end
 
         for descriptor in public_receiver_descriptors()
             rx = public_receiver(descriptor)
-            @test PublicInterfaceJuna._pilot_spacing(rx) == 3
-            @test PublicInterfaceJuna._inner_pilot_spacing(rx) == 2
+            @test PublicInterfaceJuna._pilot_spacing(rx) >= 2
+            @test PublicInterfaceJuna._inner_pilot_spacing(rx) >= 1
 
             receiver_waveform = descriptor.profile === :frame_wide_ldpc ?
                 PublicInterfaceModulations.modulate(
@@ -283,14 +273,24 @@ end
                     distorted
                 end
                 if descriptor.profile === :frame_wide_ldpc
+                    payload_start = if !compared.sync
+                        1
+                    elseif compared.sync_profile === :rpchan
+                        length(PublicInterfaceJuna._rpchan_preamble(
+                            compared, PUBLIC_INTERFACE_FS)) +
+                            PublicInterfaceJuna._rpchan_guard_length(
+                                compared, PUBLIC_INTERFACE_FS) + 1
+                    else
+                        PublicInterfaceJuna._synclen(compared) + 1
+                    end
                     for p in 1:Int(compared.partial_fft_parts)
                         lo, hi = PublicInterfaceJuna._part_bounds(
                             Int(compared.nc),
                             Int(compared.partial_fft_parts),
                             p,
                         )
-                        first_sample = Int(compared.np) + lo
-                        last_sample = Int(compared.np) + hi
+                        first_sample = payload_start - 1 + Int(compared.np) + lo
+                        last_sample = payload_start - 1 + Int(compared.np) + hi
                         @views tested_distorted[first_sample:last_sample] .*= gains[p]
                     end
                 end
@@ -342,30 +342,35 @@ end
 
     @testset "configuration controls are explicit across every receiver mode" begin
         configurations = (
-            (name = "short CP", kwargs = (np = 64,), requires_bpsk = false),
-            (name = "large FFT", kwargs = (nc = 2048, np = 64), requires_bpsk = false),
+            (name = "short CP", kwargs = (np = 64,), requires_bpsk = false,
+             requires_shifted_band = false),
+            (name = "large FFT", kwargs = (nc = 2048, np = 64), requires_bpsk = false,
+             requires_shifted_band = false),
             (name = "compact BPSK code",
-             kwargs = (bpc = 1, ldpc_k = 170, ldpc_n = 680), requires_bpsk = true),
+             kwargs = (bpc = 1, ldpc_k = 170, ldpc_n = 680), requires_bpsk = true,
+             requires_shifted_band = false),
             (name = "rate-one-half code", kwargs = (ldpc_k = 340, ldpc_n = 680),
-             requires_bpsk = false),
+             requires_bpsk = false, requires_shifted_band = false),
             (name = "eight partial views", kwargs = (partial_fft_parts = 8,),
-             requires_bpsk = false),
+             requires_bpsk = false, requires_shifted_band = false),
             (name = "minimum trained p16 pilot comb", kwargs = (pilot_ratio = 1 / 16,),
-             requires_bpsk = false),
+             requires_bpsk = false, requires_shifted_band = false),
             (name = "maximum supported partial views", kwargs = (partial_fft_parts = 16,),
-             requires_bpsk = false),
+             requires_bpsk = false, requires_shifted_band = false),
             (name = "half-band large FFT",
-             kwargs = (nc = 2048, np = 128, bw = 0.5), requires_bpsk = false),
+             kwargs = (nc = 2048, np = 128, bw = 0.5), requires_bpsk = false,
+             requires_shifted_band = true),
             (name = "shifted occupied band",
-             kwargs = (nc = 2048, np = 128, bw = 0.5, dc0 = 500),
-             requires_bpsk = false),
+             kwargs = (nc = 2048, np = 128, bw = 0.5, dc0 = 1),
+             requires_bpsk = false, requires_shifted_band = true),
         )
         source_payload = Vector{Bool}(mseq(9) .> 0)
 
         for descriptor in public_receiver_descriptors(), config in configurations
             @testset "$(descriptor.name) / $(config.name)" begin
                 configured = public_receiver(descriptor; config.kwargs...)
-                supported = !config.requires_bpsk || descriptor.supports_bpsk
+                supported = (!config.requires_bpsk || descriptor.supports_bpsk) &&
+                    (!config.requires_shifted_band || descriptor.supports_shifted_band)
                 @test isvalid(configured, PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS) ==
                       supported
 
@@ -373,7 +378,9 @@ end
                     bps = PublicInterfaceModulations.bitspersymbol(configured)
                     for nbits in (1, bps, bps + 1)
                         @testset "$nbits payload bits" begin
-                            payload = source_payload[1:nbits]
+                            payload = Bool[
+                                isodd(count_ones(37i + 11)) for i in 1:nbits
+                            ]
                             waveform = PublicInterfaceModulations.modulate(
                                 configured, payload,
                                 PUBLIC_INTERFACE_FC, PUBLIC_INTERFACE_FS)

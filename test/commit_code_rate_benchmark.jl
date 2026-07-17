@@ -13,15 +13,15 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
         receiver=3,
     )
     coded_bits_by_pilot_and_n = Dict(
-        (0.25, 512) => 880,
-        (0.25, 1024) => 1776,
-        (0.25, 2048) => 3568,
-        (0.5, 512) => 752,
-        (0.5, 1024) => 1520,
-        (0.5, 2048) => 3056,
-        (0.75, 512) => 672,
-        (0.75, 1024) => 1360,
-        (0.75, 2048) => 2720,
+        (0.25, 512) => 432,
+        (0.25, 1024) => 880,
+        (0.25, 2048) => 1776,
+        (0.5, 512) => 368,
+        (0.5, 1024) => 752,
+        (0.5, 2048) => 1520,
+        (0.75, 512) => 336,
+        (0.75, 1024) => 672,
+        (0.75, 2048) => 1360,
     )
     pilot_spacings = (0.25 => 8, 0.5 => 4, 0.75 => 3)
     fft_sizes = (512, 1024, 2048)
@@ -51,6 +51,8 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 cp=16,
                 code_rate=code_rate,
                 pilot_ratio=pilot_ratio,
+                channel_bandwidth_hz=capture.fs / 2,
+                modem_bw=1.0,
             )
             @test shared_payload == payload_bits
             for item in receivers
@@ -60,6 +62,9 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
                 @test Int(item.receiver.ldpc_k) == information_bits
                 @test item.receiver.pilot_ratio == pilot_ratio / 2
                 @test item.receiver.inner_pilot_ratio == pilot_ratio / 2
+                @test item.receiver.bw == 0.5
+                @test Int(item.receiver.partial_fft_nbands) ==
+                      (pilot_ratio == 0.25 && nfft == 512 ? 8 : 16)
                 @test CodeRateBenchmark.Juna._pilot_spacing(item.receiver) == spacing
                 @test CodeRateBenchmark.Juna._inner_pilot_spacing(item.receiver) == spacing
 
@@ -111,7 +116,7 @@ const CodeRateBenchmark = Main.ReceiverChannelBenchmark
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, code_rate=0.0, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
-        capture; packets=1, code_rate=1 / 7, warmup=false)
+        capture; packets=1, code_rate=0.3, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(
         capture; packets=1, pilot_ratio=0.0, warmup=false)
     @test_throws ArgumentError CodeRateBenchmark.benchmark_capture(

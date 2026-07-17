@@ -40,6 +40,23 @@ def value(row: dict) -> str:
     return f"{fmt_psr(row['psr'])} / {fmt_ber(row['ber'])}"
 
 
+def bandwidth_items(row: dict) -> list[str]:
+    policy = {
+        "min_channel_modem": "min channel/modem",
+        "legacy_uncapped": "legacy uncapped",
+    }[row["bandwidth_policy"]]
+    channel_bandwidth = float(row["channel_bandwidth_hz"])
+    requested_bandwidth = float(row["requested_modem_bandwidth_hz"])
+    effective_bandwidth = float(row["effective_bandwidth_hz"])
+    return [
+        f"bandwidth policy: {policy}",
+        f"channel bandwidth: {channel_bandwidth:g} Hz",
+        f"requested modem bandwidth: {requested_bandwidth:g} Hz",
+        f"effective occupied bandwidth: {effective_bandwidth:g} Hz",
+        f"effective normalized bw: {float(row['effective_bw']):g}",
+    ]
+
+
 def history_cell(row: dict) -> str:
     milliseconds = 1_000 * float(row["mean_decode_seconds_per_block"])
     effective_rate = float(row["effective_data_rate_bps"])
@@ -58,6 +75,7 @@ def history_cell(row: dict) -> str:
         f"N: {row['nfft']}", f"CP: {row['cp']}",
         f"modem rate: {row['modem_fs']} samples/s",
         f"capture rate: {row['capture_fs']} samples/s",
+        *bandwidth_items(row),
         f"blocks: {row['blocks']}", f"seed: {row['seed']}",
         f"mean decode: {milliseconds:.2f} ms/block",
         f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
@@ -89,6 +107,7 @@ def frame_history_cell(row: dict) -> str:
         f"frame geometry: {row['frame_blocks']} OFDM blocks/codeword",
         f"modem rate: {row['modem_fs']} samples/s",
         f"capture rate: {row['capture_fs']} samples/s",
+        *bandwidth_items(row),
         f"frames: {row['frames']}", f"seed: {row['seed']}",
         f"mean decode: {milliseconds:.2f} ms/frame",
         f"bit errors: {row['bit_errors']}/{row['payload_bits']}",
@@ -200,6 +219,10 @@ def commit_history_table(history: list[dict]) -> list[str]:
         "are split equally between inner and outer pilots. JunaCore densities "
         "snap to realizable 1/k comb spacings, so each cell records the actual "
         "inner and outer spacing. The sweep uses N={512, 1024, 2048} with CP=16. "
+        "For the latest commit, the occupied width is the smaller of the Red "
+        "channel and modem bandwidths: "
+        "min(19.2 kHz / 2, 1.0 x 19.2 kHz) = 9.6 kHz, so JunaCore uses bw=0.5. "
+        "Historical rows retain their recorded bandwidth policy and values. "
         "Each receiver cell is "
         "**PSR / mean BER / mean decode time per block / effective data rate**. "
         "PSR is the fraction of payload-exact blocks; effective rate counts only "
@@ -289,10 +312,11 @@ def frame_commit_history_table(history: list[dict]) -> list[str]:
     latest_best_psr = max(float(row["psr"]) for row in latest_rows)
     latest_note = (
         f"For the latest commit `{latest_commit[:7]}`, the best frame PSR is "
-        f"**{latest_best_psr:.3f}**. "
+        f"**{latest_best_psr:.3f}**."
     )
     if latest_best_psr == 0:
         latest_note += (
+            " "
             "No complete ten-block frame was payload-exact, so effective data "
             "rate is also zero in every cell; BER remains the finer diagnostic."
         )

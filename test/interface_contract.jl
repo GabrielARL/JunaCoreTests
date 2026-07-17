@@ -73,6 +73,7 @@ function assert_receiver_profiles()
     full = Juna.FullModulation()
     coupled = Juna.CoupledModulation()
     frame_wide = Juna.FrameWideLDPCModulation()
+    frame_rls = Juna.FrameRLSModulation()
     legacy_full = Juna.Modulation(mode = :robust)
 
     @test standard.mode === :standard
@@ -81,6 +82,7 @@ function assert_receiver_profiles()
     @test full.mode === :full
     @test coupled.mode === :coupled
     @test frame_wide.mode === :frame_wide_ldpc
+    @test frame_rls.mode === :frame_rls
     @test legacy_full.mode === :robust
     @test JunaCore.JunaStandard.Modulation().mode === :standard
     @test JunaCore.JunaPartialFFT.Modulation().mode === :pfft
@@ -88,17 +90,76 @@ function assert_receiver_profiles()
     @test JunaCore.JunaFull.Modulation().mode === :full
     @test JunaCore.JunaCoupled.Modulation().mode === :coupled
     @test JunaCore.JunaFrameWideLDPC.Modulation().mode === :frame_wide_ldpc
+    @test JunaCore.JunaFrameRLS.Modulation().mode === :frame_rls
     @test Juna.receiver_profile(standard) === :standard
     @test Juna.receiver_profile(pfft) === :pfft
     @test Juna.receiver_profile(lite) === :lite
     @test Juna.receiver_profile(full) === :full
     @test Juna.receiver_profile(coupled) === :coupled
     @test Juna.receiver_profile(frame_wide) === :frame_wide_ldpc
+    @test Juna.receiver_profile(frame_rls) === :frame_wide_ldpc
     @test Juna.receiver_profile(legacy_full) === :full
     # the baselines never refine, so BPSK stays legal for them (like Lite)
     @test isvalid(Juna.StandardModulation(bpc = 1, ldpc_k = 170, ldpc_n = 680), FC, FS)
     @test isvalid(Juna.PartialFFTModulation(bpc = 1, ldpc_k = 170, ldpc_n = 680), FC, FS)
     @test !isvalid(Juna.Modulation(mode = :unknown), FC, FS)
+end
+
+function compact_frame_rls_receiver()
+    JunaCore.JunaFrameRLS.Modulation(
+        nc = 128,
+        np = 16,
+        ldpc_k = 24,
+        ldpc_n = 48,
+        ldpc_npc = 2,
+        partial_fft_parts = 1,
+        partial_fft_nbands = 2,
+        pilot_ratio = 1 / 4,
+        inner_pilot_ratio = 1 / 3,
+        rpchan_guard_s = 0.0,
+        rpchan_doppler_steps = 1,
+        rpchan_sync_max_lag = 0,
+    )
+end
+
+function assert_frame_stateful_band_rls_contract(m)
+    @test m.mode === :frame_rls
+    @test Juna.receiver_profile(m) === :frame_wide_ldpc
+    @test m.frame_receiver === :stateful_lite
+    @test m.compatibility_profile === :rpchan
+    @test m.sync
+    @test m.sync_profile === :rpchan
+    @test isvalid(m, FC, 9_600.0)
+
+    blocks = 2
+    payload = Bool[
+        isodd(count_ones(31i + 7))
+        for i in 1:Juna._frame_payload_capacity(m, blocks)
+    ]
+    waveform = Modulations.modulate(m, payload, FC, 9_600.0)
+    metrics, cfo = Modulations.demodulate(
+        m, length(payload), waveform, FC, 9_600.0)
+
+    @test length(waveform) == Modulations.signallength(
+        m, length(payload), FC, 9_600.0)
+    @test (metrics .> 0) == payload
+    @test all(isfinite, metrics)
+    @test cfo == 0.0
+
+    payload_samples = @view waveform[end - blocks * (Int(m.nc) + Int(m.np)) + 1:end]
+    observations = Array{ComplexF64}(
+        undef, m.partial_fft_parts, Int(m.nc), blocks)
+    for block in 1:blocks
+        lo = 1 + (block - 1) * (Int(m.nc) + Int(m.np))
+        hi = block * (Int(m.nc) + Int(m.np))
+        observations[:, :, block] .= Juna._branch_observations(
+            m, @view payload_samples[lo:hi])
+    end
+    code = Juna._frame_code(m, blocks)
+    trace = Juna._frame_receiver_trace(m, code, Juna._layout(m, 9_600.0), observations)
+    @test trace.profile === :stateful_lite
+    @test trace.best.valid
+    @test trace.best.syndrome == 0
 end
 
 function assert_frame_wide_ldpc_contract(m)
@@ -245,6 +306,7 @@ function assert_declared_refinement_contract(m)
         :reduced_wz => assert_reduced_wz_objective_contract,
         :coupled_cwz => assert_coupled_cwz_objective_contract,
         :frame_wide_ldpc => assert_frame_wide_ldpc_contract,
+        :frame_stateful_band_rls => assert_frame_stateful_band_rls_contract,
     )
 
     @test capability isa Symbol
@@ -265,21 +327,22 @@ function assert_modulation_contract(m)
     @test Modulations.init(m, FC, FS) === nothing
     @test isvalid(m, FC, FS)
 
-    # All receivers share the paper frame: 170 payload bits per 1280-sample block.
-    @test Modulations.bitspersymbol(m) == 170
+    payload_capacity = Modulations.bitspersymbol(m)
+    @test payload_capacity isa Int
+    @test payload_capacity > 0
 
-    nbits = 128                                        # sub-block payload, zero-padded
-    @test Modulations.signallength(m, nbits, FC, FS) == 1280
-
-    # eq:goodput accounting: 128 bits over one 1280-sample block at 24 kHz.
-    @test Modulations.payload_rate(m, nbits, FC, FS) == 2400.0
+    nbits = min(128, payload_capacity)                 # sub-block payload, zero-padded
+    nsamples = Modulations.signallength(m, nbits, FC, FS)
+    @test nsamples isa Int
+    @test nsamples > 0
+    @test Modulations.payload_rate(m, nbits, FC, FS) == nbits * FS / nsamples
 
     # Noiseless loopback with a non-trivial pattern; payload-exact acceptance, the
     # paper's PSR rule. An all-zeros payload would hide polarity/ordering bugs.
     bits = Vector{Bool}(isodd.(1:nbits))
     waveform = Modulations.modulate(m, bits, FC, FS)
     @test waveform isa Vector{ComplexF64}
-    @test length(waveform) == 1280
+    @test length(waveform) == nsamples
 
     metrics, cfo = Modulations.demodulate(m, nbits, waveform, FC, FS)
     @test metrics isa Vector{Float64}
@@ -294,7 +357,8 @@ end
 # parity of the bit count of the index), so the three blocks carry three DIFFERENT
 # payloads — a receiver that swapped or repeated blocks would fail here.
 function assert_extended_roundtrip(m)
-    nbits = 2 * 170 + 17
+    payload_capacity = Modulations.bitspersymbol(m)
+    nbits = 2 * payload_capacity + min(17, payload_capacity)
     bits = Vector{Bool}([isodd(count_ones(p)) for p in 1:nbits])
     waveform = Modulations.modulate(m, bits, FC, FS)
     @test length(waveform) == Modulations.signallength(m, nbits, FC, FS)
@@ -312,8 +376,12 @@ end
         assert_receiver_profiles()
     end
 
-    @testset "shared receiver catalog covers every runtime profile" begin
+    @testset "shared receiver catalog covers every public runtime mode" begin
         assert_public_receiver_catalog()
+        @test any(
+            descriptor -> descriptor.name == "JUNA-FrameRLS",
+            public_receiver_descriptors(),
+        )
     end
 
     @testset "JunaCoupled facade exposes only its Modulations provider" begin
@@ -326,6 +394,56 @@ end
         provider = facade.Modulation()
         @test provider isa Modulations.Modulation
         @test Modulations.refinement_objective(provider) === :coupled_cwz
+    end
+
+    @testset "JunaFrameRLS facade exposes one pinned frame-stateful provider" begin
+        facade = JunaCore.JunaFrameRLS
+        @test names(facade; all=false, imported=false) == [:JunaFrameRLS, :Modulation]
+        @test !isdefined(facade, :Juna)
+        @test !isdefined(facade, :_frame_stateful_band_rls)
+
+        provider = facade.Modulation()
+        @test provider.mode === :frame_rls
+        @test provider.frame_receiver === :stateful_lite
+        @test provider.compatibility_profile === :rpchan
+        @test provider.sync
+        @test provider.sync_profile === :rpchan
+        @test (Int(provider.nc), Int(provider.np)) == (1024, 16)
+        @test (provider.ldpc_k, provider.ldpc_n, provider.ldpc_npc) ==
+              (817, 1634, 10)
+        @test provider.pilot_ratio == 1 / 5
+        @test provider.inner_pilot_ratio == 1 / 10
+        @test provider.partial_fft_nbands == 4
+        @test Modulations.refinement_objective(provider) ===
+              :frame_stateful_band_rls
+
+        alternate = facade.Modulation(nc=512, np=32, pilot_ratio=1 / 3)
+        @test (Int(alternate.nc), Int(alternate.np)) == (512, 32)
+        @test alternate.pilot_ratio == 1 / 3
+        @test alternate.mode === :frame_rls
+        @test alternate.frame_receiver === :stateful_lite
+        @test alternate.compatibility_profile === :rpchan
+        @test alternate.sync_profile === :rpchan
+
+        for kwargs in (
+            (; mode=:lite),
+            (; frame_receiver=:lite),
+            (; compatibility_profile=:juna),
+            (; sync=false),
+            (; sync_profile=:lfm),
+        )
+            @test_throws ArgumentError facade.Modulation(; kwargs...)
+        end
+
+        Modulations.init(alternate, FC, 9_600.0)
+        @test (Int(alternate.nc), Int(alternate.np)) == (1024, 16)
+        @test (alternate.ldpc_k, alternate.ldpc_n, alternate.ldpc_npc) ==
+              (817, 1634, 10)
+        @test alternate.pilot_ratio == 1 / 5
+        @test alternate.inner_pilot_ratio == 1 / 10
+        @test alternate.frame_receiver === :stateful_lite
+        @test alternate.compatibility_profile === :rpchan
+        @test alternate.sync_profile === :rpchan
     end
 
     @testset "declared refinement capability matches an executable objective" begin
@@ -343,12 +461,14 @@ end
             ("JunaCoupled module", JunaCore.JunaCoupled.Modulation(partial_fft_parts = 1)),
             ("JUNA Frame-wide LDPC", Juna.FrameWideLDPCModulation()),
             ("JunaFrameWideLDPC module", JunaCore.JunaFrameWideLDPC.Modulation()),
+            ("JunaFrameRLS module", compact_frame_rls_receiver()),
             ("legacy robust alias", Juna.Modulation(mode = :robust, partial_fft_parts = 1)),
         )
         expected = (:none, :none, :none, :pilot_band_ls, :pilot_band_ls,
                     :posterior_anchor_ls, :posterior_anchor_ls,
                     :reduced_wz, :reduced_wz, :coupled_cwz, :coupled_cwz,
                     :frame_wide_ldpc, :frame_wide_ldpc,
+                    :frame_stateful_band_rls,
                     :reduced_wz)
 
         for ((name, provider), objective) in zip(providers, expected)
@@ -378,7 +498,7 @@ end
 
     if get(ENV, "JUNA_INTERFACE_ROUNDTRIP", "0") == "1"
         for descriptor in public_receiver_descriptors()
-            @testset "$(descriptor.name): extended multi-block loopback (357 bits, 3 blocks)" begin
+            @testset "$(descriptor.name): extended three-block loopback" begin
                 assert_extended_roundtrip(public_receiver(descriptor))
             end
         end

@@ -82,7 +82,7 @@ function juna_modulation(data)
     fec_n % symbols == 0 || error("ReplayCh fec_n is not divisible by OFDM symbols")
     fec_k % symbols == 0 || error("ReplayCh fec_k is not divisible by OFDM symbols")
     preamble_seed = scalar(data, "preamble_seed", Int)
-    JunaImpl.FrameWideLDPCModulation(
+    JunaCore.JunaFrameRLS.Modulation(
         nc=UInt16(scalar(data, "nfft", Int)),
         np=UInt16(scalar(data, "cp", Int)),
         bw=1.0,

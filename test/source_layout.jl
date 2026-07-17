@@ -75,6 +75,12 @@ const SOURCE_LAYOUT_SRC = joinpath(SOURCE_LAYOUT_ROOT, "src")
         @test isfile(joinpath(SOURCE_LAYOUT_ROOT, "src", "juna", "frame_wide_ldpc.jl"))
         @test isdefined(JunaCore.Juna, :FrameWideLDPCModulation)
         @test JunaCore.JunaFrameWideLDPC.Modulation().mode === :frame_wide_ldpc
+        @test isdefined(JunaCore.Juna, :FrameRLSModulation)
+        @test !isdefined(JunaCore.Juna, :RpchanModulation)
+        @test JunaCore.JunaFrameRLS.Modulation().mode === :frame_rls
+        @test !isdefined(JunaCore, :JunaRpchan)
+        @test names(JunaCore.JunaFrameRLS; all=false, imported=false) ==
+              [:JunaFrameRLS, :Modulation]
     end
 end
 

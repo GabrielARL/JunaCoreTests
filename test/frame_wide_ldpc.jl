@@ -170,6 +170,39 @@ end
               [:JunaFrameWideLDPC, :Modulation]
     end
 
+    @testset "JUNA-FrameRLS selects the stateful paper receiver" begin
+        receiver = JunaCore.JunaFrameRLS.Modulation(
+            nc=128,
+            np=16,
+            ldpc_k=24,
+            ldpc_n=48,
+            ldpc_npc=2,
+            partial_fft_parts=1,
+            partial_fft_nbands=2,
+            pilot_ratio=1 / 4,
+            inner_pilot_ratio=1 / 3,
+            rpchan_guard_s=0.0,
+            rpchan_doppler_steps=1,
+            rpchan_sync_max_lag=0,
+        )
+        blocks = 2
+        payload = Bool[
+            isodd(count_ones(13i + 5))
+            for i in 1:FrameWideJuna._frame_payload_capacity(receiver, blocks)
+        ]
+        waveform = FrameWideModulations.modulate(
+            receiver, payload, FRAME_WIDE_FC, 9_600.0)
+        metrics, cfo = FrameWideModulations.demodulate(
+            receiver, length(payload), waveform, FRAME_WIDE_FC, 9_600.0)
+
+        @test receiver.mode === :frame_rls
+        @test receiver.frame_receiver === :stateful_lite
+        @test receiver.compatibility_profile === :rpchan
+        @test receiver.sync_profile === :rpchan
+        @test (metrics .> 0) == payload
+        @test cfo == 0.0
+    end
+
     @testset "five receiver algorithms use one true frame-wide LDPC graph" begin
         profiles = (:standard, :pfft, :lite, :full, :coupled)
         blocks = 3

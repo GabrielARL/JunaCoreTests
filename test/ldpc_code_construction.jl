@@ -26,7 +26,8 @@ using JunaCore
 
 const LDPCConstructionJuna = JunaCore.Juna
 const LDPCConstructionLDPC = JunaCore.LDPC
-const LDPCConstructionRoot = normpath(joinpath(@__DIR__, ".."))
+const LDPCConstructionRoot = get(ENV, "JUNA_CORE_ROOT",
+    normpath(joinpath(dirname(pathof(JunaCore)), "..")))
 
 gf2_syndrome(H::AbstractMatrix{Bool}, codeword::AbstractVector{Bool}) =
     mod.(Int.(H) * Int.(codeword), 2)

@@ -13,6 +13,12 @@ using Test
 include(joinpath(@__DIR__, "..", "tools", "rpchan_golden_comparison.jl"))
 using .RpchanGoldenComparison
 
+@testset "golden comparator enters through the public JUNA-FrameRLS facade" begin
+    comparator = read(joinpath(
+        @__DIR__, "..", "tools", "compare_rpchan_golden_frame.jl"), String)
+    @test occursin("JunaCore.JunaFrameRLS.Modulation(", comparator)
+end
+
 function synthetic_trace(; partial_delta=0.0, ldpc_length=8)
     passband = collect(range(-0.75, 0.75; length=24))
     active_bins = [2, 3, 7, 8]

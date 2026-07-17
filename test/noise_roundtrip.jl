@@ -53,8 +53,11 @@ const NOISE_PACKETS = 12
 function noise_trials(npackets::Int; seed::Int = NOISE_SEED)
     tx = NoiseJuna.LiteModulation()
     bps = NoiseModulations.bitspersymbol(tx)
-    nsamples = NoiseModulations.signallength(
-        tx, bps, NOISE_FC, NOISE_FS)
+    nsamples = maximum(
+        NoiseModulations.signallength(
+            public_receiver(descriptor), bps, NOISE_FC, NOISE_FS)
+        for descriptor in public_receiver_descriptors()
+    )
     rng = Xoshiro(seed)
     [begin
         bits = rand(rng, Bool, bps)
@@ -73,10 +76,9 @@ function noise_point(descriptor, snr_db, trials)
     for trial in trials
         clean = NoiseModulations.modulate(
             m, trial.bits, NOISE_FC, NOISE_FS)
-        length(clean) == length(trial.unit_noise) ||
-            throw(DimensionMismatch(
-                "matched receiver waveform and shared noise differ in length"))
-        waveform = clean .+ sigma .* trial.unit_noise
+        length(clean) <= length(trial.unit_noise) ||
+            throw(DimensionMismatch("shared noise is shorter than the waveform"))
+        waveform = clean .+ sigma .* @view(trial.unit_noise[1:length(clean)])
         metrics, _ = NoiseModulations.demodulate(
             m, length(trial.bits), waveform, NOISE_FC, NOISE_FS)
         e = count((metrics .> 0) .!= trial.bits)

@@ -13,10 +13,12 @@ using JunaCore
 import SignalAnalysis
 
 const BenchmarkRoot = normpath(joinpath(@__DIR__, ".."))
+const BenchmarkExplorerRoot = get(ENV, "JUNA_EXPLORER_ROOT",
+    normpath(joinpath(BenchmarkRoot, "..", "JunaCoreExplorer")))
 const BenchmarkTool = joinpath(BenchmarkRoot, "tools", "receiver_channel_benchmark.jl")
 const FrameWidePaperTool = joinpath(BenchmarkRoot, "tools", "reproduce_paper_frame_wide.jl")
-const BenchmarkPage = joinpath(BenchmarkRoot, "tools", "receiver_benchmark_page.py")
-const BenchmarkServer = joinpath(BenchmarkRoot, "tools", "test_runner_server.py")
+const BenchmarkPage = joinpath(BenchmarkExplorerRoot, "tools", "receiver_benchmark_page.py")
+const BenchmarkServer = joinpath(BenchmarkExplorerRoot, "tools", "test_runner_server.py")
 
 function benchmark_curl(args...)
     read(`curl -sS --max-time 10 $(collect(args))`, String)
@@ -35,10 +37,10 @@ end
         @test occursin("\"--strict\", \"true\"", server)
 
         makefile = read(joinpath(BenchmarkRoot, "Makefile"), String)
-        @test occursin("test-receiver-benchmark-preflight:", makefile)
-        @test occursin("receiver-color-snr-report:", makefile)
+        @test occursin("record-frame-benchmark:", makefile)
+        @test occursin("record-sg1-rpchan-baseline:", makefile)
 
-        nav = read(joinpath(BenchmarkRoot, "tools", "workbench_data.py"), String)
+        nav = read(joinpath(BenchmarkExplorerRoot, "tools", "workbench_data.py"), String)
         @test occursin("data-dest=\"benchmark\"", nav)
     end
 
@@ -74,6 +76,61 @@ end
                       filter(entry -> entry.color == :yellow, channels))
             @test_throws ArgumentError benchmark.select_algorithms(["unknown"])
             @test_throws ArgumentError benchmark.select_channels(["orange1"])
+        end
+
+        @testset "Red replay bandwidth uses the smaller channel or modem width" begin
+            capture = benchmark.identity_capture(fs=19_200.0, fc=25_000.0)
+
+            channel_limited = benchmark._effective_bandwidth_geometry(
+                capture, 19_200.0, 1.0,
+            )
+            @test channel_limited.channel_bandwidth_hz == 9_600.0
+            @test channel_limited.requested_modem_bandwidth_hz == 19_200.0
+            @test channel_limited.effective_bandwidth_hz == 9_600.0
+            @test channel_limited.normalized_bw == 0.5
+
+            modem_limited = benchmark._effective_bandwidth_geometry(
+                capture, 9_600.0, 0.5,
+            )
+            @test modem_limited.channel_bandwidth_hz == 9_600.0
+            @test modem_limited.requested_modem_bandwidth_hz == 4_800.0
+            @test modem_limited.effective_bandwidth_hz == 4_800.0
+            @test modem_limited.normalized_bw == 0.5
+
+            rpchan_equal = benchmark._effective_bandwidth_geometry(
+                capture, 9_600.0, 1.0,
+            )
+            @test rpchan_equal.effective_bandwidth_hz == 9_600.0
+            @test rpchan_equal.normalized_bw == 1.0
+
+            receivers, _ = benchmark._receiver_set(
+                benchmark.algorithm_descriptors(), 25_000.0, 19_200.0;
+                channel_bandwidth_hz=channel_limited.channel_bandwidth_hz,
+                modem_bw=1.0,
+            )
+            @test length(receivers) == 5
+            @test all(item -> item.receiver.bw == 0.5, receivers)
+            @test all(item -> JunaCore.Modulations.isvalid(
+                item.receiver, 25_000.0, 19_200.0), receivers)
+
+            sparse_pilot_receivers, _ = benchmark._receiver_set(
+                benchmark.algorithm_descriptors(), 25_000.0, 19_200.0;
+                nfft=512, cp=16, code_rate=1 / 16, pilot_ratio=0.25,
+                channel_bandwidth_hz=9_600.0, modem_bw=1.0,
+            )
+            @test all(item -> item.receiver.partial_fft_nbands == 8,
+                      sparse_pilot_receivers)
+            @test all(item -> JunaCore.Juna._pilot_training_sufficient(
+                item.receiver,
+                JunaCore.Juna._layout(item.receiver, 19_200.0),
+            ), sparse_pilot_receivers)
+
+            @test_throws ArgumentError benchmark._effective_bandwidth_geometry(
+                capture, 19_200.0, 0.0,
+            )
+            @test_throws ArgumentError benchmark._effective_bandwidth_geometry(
+                capture, 19_200.0, 1.01,
+            )
         end
 
         @testset "paper frame-wide catalog pins all twelve measured configurations" begin
@@ -244,7 +301,7 @@ end
                 @test row.packets == 2
                 @test row.successful_packets == 2
                 @test row.decode_failures == 0
-                @test row.payload_bits == 2 * 170
+                @test row.payload_bits == 2 * 84
                 @test row.bit_errors == 0
                 @test row.ber == 0.0
                 @test row.psr == 1.0
@@ -260,6 +317,11 @@ end
                 @test row.receiver == 3
                 @test row.modem_fs == 19_200.0
                 @test row.capture_fs == 19_200.0
+                @test row.requested_modem_bw == 1.0
+                @test row.requested_modem_bandwidth_hz == 19_200.0
+                @test row.channel_bandwidth_hz == 9_600.0
+                @test row.effective_bandwidth_hz == 9_600.0
+                @test row.effective_bw == 0.5
             end
         end
 
@@ -278,6 +340,9 @@ end
                 ))
                 @test row.modem_fs == fs
                 @test row.capture_fs == fs
+                @test row.channel_bandwidth_hz == fs / 2
+                @test row.effective_bandwidth_hz == fs / 2
+                @test row.effective_bw == 0.5
                 @test row.ber == 0.0
             end
         end
@@ -323,6 +388,10 @@ end
                 @test row.modem_profile == "rpchan_winner"
                 @test row.frame_packets == 10
                 @test row.modem_fs == 9_600.0
+                @test row.requested_modem_bandwidth_hz == 9_600.0
+                @test row.channel_bandwidth_hz == 9_600.0
+                @test row.effective_bandwidth_hz == 9_600.0
+                @test row.effective_bw == 1.0
                 @test row.packets == 20
                 @test row.successful_packets == 20
                 @test row.payload_bits == 20 * 735
@@ -443,6 +512,13 @@ end
             )
             @test_throws ArgumentError benchmark.validate_report_rows(
                 [only(rows), only(rows)]; expected_rows=2, require_ok=true,
+            )
+            wrong_bandwidth = merge(only(rows), (
+                effective_bandwidth_hz=only(rows).requested_modem_bandwidth_hz,
+                effective_bw=only(rows).requested_modem_bw,
+            ))
+            @test_throws ArgumentError benchmark.validate_report_rows(
+                [wrong_bandwidth]; expected_rows=1, require_ok=true,
             )
         end
 

@@ -13,15 +13,15 @@ const FrameCommitBenchmark = Main.ReceiverChannelBenchmark
         receiver=3,
     )
     coded_bits_by_pilot_and_n = Dict(
-        (0.25, 512) => 880,
-        (0.25, 1024) => 1776,
-        (0.25, 2048) => 3568,
-        (0.5, 512) => 752,
-        (0.5, 1024) => 1520,
-        (0.5, 2048) => 3056,
-        (0.75, 512) => 672,
-        (0.75, 1024) => 1360,
-        (0.75, 2048) => 2720,
+        (0.25, 512) => 432,
+        (0.25, 1024) => 880,
+        (0.25, 2048) => 1776,
+        (0.5, 512) => 368,
+        (0.5, 1024) => 752,
+        (0.5, 2048) => 1520,
+        (0.75, 512) => 336,
+        (0.75, 1024) => 672,
+        (0.75, 2048) => 1360,
     )
     pilot_spacings = (0.25 => 8, 0.5 => 4, 0.75 => 3)
     code_rates = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
@@ -47,6 +47,8 @@ const FrameCommitBenchmark = Main.ReceiverChannelBenchmark
                     cp=16,
                     code_rate=code_rate,
                     pilot_ratio=pilot_ratio,
+                    channel_bandwidth_hz=capture.fs / 2,
+                    modem_bw=1.0,
                 )
 
             @test shared_payload == frame_payload
@@ -57,6 +59,9 @@ const FrameCommitBenchmark = Main.ReceiverChannelBenchmark
                 @test Int(item.receiver.np) == 16
                 @test Int(item.receiver.ldpc_n) == coded_bits
                 @test Int(item.receiver.ldpc_k) == information_bits
+                @test item.receiver.bw == 0.5
+                @test Int(item.receiver.partial_fft_nbands) ==
+                      (pilot_ratio == 0.25 && nfft == 512 ? 8 : 16)
                 @test FrameCommitBenchmark.Juna._frame_payload_capacity(
                     item.receiver, frame_blocks) == frame_payload
                 @test isvalid(item.receiver, capture.fc, capture.fs)

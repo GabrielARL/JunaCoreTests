@@ -199,7 +199,12 @@ end
         payload = general_pilot_bits(63)
         for descriptor in public_receiver_descriptors()
             @testset "$(descriptor.name)" begin
-                m = public_receiver(descriptor)
+                # Hold the coded length below the p3 carrier capacity. The
+                # pinned SG-1 JUNA-FrameRLS code has n=1634 and therefore
+                # cannot physically fit when a p3/p4 outer comb consumes the
+                # denser share of a 1024-point QPSK symbol.
+                m = public_receiver(
+                    descriptor; ldpc_k=340, ldpc_n=1360, ldpc_npc=3)
                 for (outer_spacing, inner_spacing) in spacing_pairs
                     m.pilot_ratio = 1 / outer_spacing
                     m.inner_pilot_ratio = inner_spacing == 0 ? 0.0 : 1 / inner_spacing
@@ -210,7 +215,8 @@ end
                     metrics, cfo = JunaCore.Modulations.demodulate(
                         m, length(payload), waveform, PILOT_RATIO_FC, PILOT_RATIO_FS)
 
-                    @test length(waveform) == Int(m.nc) + Int(m.np)
+                    @test length(waveform) == JunaCore.Modulations.signallength(
+                        m, length(payload), PILOT_RATIO_FC, PILOT_RATIO_FS)
                     @test all(isfinite, metrics)
                     @test (metrics .> 0) == payload
                     @test cfo == 0.0

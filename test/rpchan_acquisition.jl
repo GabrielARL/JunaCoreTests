@@ -17,7 +17,9 @@ using Test
 using JunaCore
 using Random
 
-include(joinpath(@__DIR__, "support", "public_receivers.jl"))
+if !isdefined(@__MODULE__, :PUBLIC_RECEIVER_DESCRIPTORS)
+    include(joinpath(@__DIR__, "support", "public_receivers.jl"))
+end
 
 const RpchanAcquisitionJuna = JunaCore.Juna
 const RpchanAcquisitionModulations = JunaCore.Modulations

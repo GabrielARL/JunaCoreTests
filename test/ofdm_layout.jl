@@ -16,6 +16,8 @@
 #     682 data, and n=1360 coded bits with two deterministic filler tones.
 #   * The package fixes 16 ridge-LS bands (_PARTIAL_FFT_NBANDS); the separately
 #     labeled ReplayCh measured profile uses 4. This suite pins the package.
+#   * bw is a fraction of fs and dc0 is a kHz offset from fc; RF-edge checks
+#     allow one FFT-bin of quantization while keeping DC nulled.
 # If one of these asserts changes intentionally, update the literal, paper
 # package-default table, and walkthrough contract together.
 #
@@ -30,6 +32,7 @@ using JunaCore
 
 const OfdmLayoutJuna = JunaCore.Juna
 
+const OFDM_LAYOUT_FC = 24_000.0
 const OFDM_LAYOUT_FS = 24_000.0
 
 @testset verbose = true "JUNA OFDM layout" begin
@@ -118,20 +121,35 @@ const OFDM_LAYOUT_FS = 24_000.0
         @test sort(union(changed.pilot_idx, changed.data_idx)) == changed.active
     end
 
-    @testset "dc0 = +500 Hz: circular 21-bin shift, DC stays nulled" begin
-        base = OfdmLayoutJuna._layout(OfdmLayoutJuna.LiteModulation(), OFDM_LAYOUT_FS)
-        shifted = OfdmLayoutJuna.LiteModulation(dc0 = Int16(500))
+    @testset "bw=0.5 spans 18-30 kHz; dc0=1 kHz shifts it to 19-31 kHz" begin
+        half_band = OfdmLayoutJuna.LiteModulation(bw = 0.5)
+        base = OfdmLayoutJuna._layout(half_band, OFDM_LAYOUT_FS)
+        shifted = OfdmLayoutJuna.LiteModulation(bw = 0.5, dc0 = Int16(1))
         shifted_layout = OfdmLayoutJuna._layout(shifted, OFDM_LAYOUT_FS)
 
-        # 500 Hz at fs = 24 kHz over 1024 bins -> round(500/24000*1024) = 21 bins.
+        # dc0 is in kHz: 1 kHz at fs=24 kHz over 1024 bins rounds to 43 bins.
         predicted = sort(unique(filter(k -> k != 1,
-                                       mod.(base.active .+ 21 .- 1, 1024) .+ 1)))
+                                       mod.(base.active .+ 43 .- 1, 1024) .+ 1)))
         @test shifted_layout.active == predicted
-        @test length(shifted_layout.active) == 1022              # one tone lands on DC and is dropped
+        @test length(shifted_layout.active) == length(base.active) - 1
         @test !(1 in shifted_layout.active)
         @test allunique(shifted_layout.active)
         @test sort(union(shifted_layout.pilot_idx, shifted_layout.data_idx)) ==
               shifted_layout.active
+
+        rf_edges(layout) = begin
+            signed_bins = [(bin - 1) <= 1024 ÷ 2 ? bin - 1 : bin - 1 - 1024
+                           for bin in layout.active]
+            frequencies = OFDM_LAYOUT_FC .+ signed_bins .* (OFDM_LAYOUT_FS / 1024)
+            extrema(frequencies)
+        end
+        bin_width = OFDM_LAYOUT_FS / 1024
+        base_edges = rf_edges(base)
+        shifted_edges = rf_edges(shifted_layout)
+        @test isapprox(base_edges[1], 18_000.0; atol=bin_width)
+        @test isapprox(base_edges[2], 30_000.0; atol=bin_width)
+        @test isapprox(shifted_edges[1], 19_000.0; atol=bin_width)
+        @test isapprox(shifted_edges[2], 31_000.0; atol=bin_width)
     end
 end
 
