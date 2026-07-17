@@ -1,0 +1,58 @@
+name: Static Explorer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/test_symbol_explorer.html"
+      - "tools/build_static_pages.py"
+      - "test/static_pages_contract.py"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out JunaCoreTests
+        uses: actions/checkout@v6
+
+      - name: Verify static Explorer contract
+        run: python3 test/static_pages_contract.py
+
+      - name: Build static Explorer
+        run: >-
+          python3 tools/build_static_pages.py
+          --source docs/test_symbol_explorer.html
+          --out-dir _site
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

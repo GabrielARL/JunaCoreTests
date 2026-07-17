@@ -13,8 +13,10 @@ Without a sibling checkout, first run
 `Pkg.add(url="https://github.com/GabrielARL/JunaCore.jl")`. Override source
 inspection with `JUNA_CORE_ROOT=/path/to/JunaCore.jl`.
 
-The browser UI is maintained in
-[JunaCoreExplorer](https://github.com/GabrielARL/JunaCoreExplorer).
+Open the [static JUNA Explorer](https://gabrielarl.github.io/JunaCoreTests/)
+online. Its UI source is maintained in
+[JunaCoreExplorer](https://github.com/GabrielARL/JunaCoreExplorer); executing
+tests still requires the local runner.
 
 ## Reproduction Boundary
 
