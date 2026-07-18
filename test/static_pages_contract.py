@@ -2,6 +2,8 @@
 """Contract for the static JUNA Explorer GitHub Pages deployment."""
 
 from pathlib import Path
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,9 +25,11 @@ class StaticPagesContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
+            env = {k: v for k, v in os.environ.items() if k != "GITHUB_SHA"}
             subprocess.run(
                 [sys.executable, str(BUILDER), "--source", str(SOURCE), "--out-dir", str(output)],
                 check=True,
+                env=env,
             )
 
             index = output / "index.html"
@@ -36,6 +40,29 @@ class StaticPagesContract(unittest.TestCase):
             self.assertIn("DATA.served === true", html)
             self.assertNotIn('"served": true', html)
             self.assertIn("This is the static copy", html)
+
+    def test_builder_stamps_the_deploy_commit_for_pages(self):
+        # the artifact embeds the commit that GENERATED it, which is one
+        # commit older than the commit that DEPLOYS it; the Pages build
+        # re-stamps the display commit from GITHUB_SHA. The stamp is
+        # display-only: the checklist is keyed by the suite fingerprint,
+        # which must come through untouched.
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            env = dict(os.environ, GITHUB_SHA="deadbeefcafe4242deadbeefcafe4242deadbeef")
+            subprocess.run(
+                [sys.executable, str(BUILDER), "--source", str(SOURCE), "--out-dir", str(output)],
+                check=True,
+                env=env,
+            )
+
+            html = (output / "index.html").read_text(encoding="utf-8")
+            self.assertIn('"commit": "deadbee"', html)
+            self.assertIn('"dirty": false', html)
+            source_fingerprint = re.search(
+                r'"fingerprint": "([0-9a-f]{12})"', SOURCE.read_text(encoding="utf-8"))
+            self.assertIsNotNone(source_fingerprint)
+            self.assertIn('"fingerprint": "%s"' % source_fingerprint.group(1), html)
 
     def test_workflow_publishes_the_static_build_from_main(self):
         self.assertTrue(WORKFLOW.is_file())
