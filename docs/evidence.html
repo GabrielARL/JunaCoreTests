@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JunaCore Evidence</title>
+<!-- This is a static evidence snapshot; runs execute in CI or the local workbench. -->
+<style>
+  :root {
+    --bg:#f5f7fa; --panel:#ffffff; --inset:#eef2f7; --line:#d7dfe9;
+    --ink:#1a2436; --muted:#5c6b84; --accent:#1273cc; --accent-soft:#e3effa;
+    --good:#0ca30c; --warn:#a87408; --crit:#d03b3b;
+    --good-bg:#e7f5e7; --warn-bg:#faf0d8; --crit-bg:#fae4e4; --na-bg:#e9edf3;
+    --cell-good:#0ca30c; --cell-warn:#fab219; --cell-crit:#d03b3b; --cell-na:#a6b1c2;
+    --shadow:0 1px 3px rgba(20,35,60,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0c1322; --panel:#121c30; --inset:#0e1728; --line:#22304a;
+      --ink:#e8eef7; --muted:#8fa0b8; --accent:#5fb2f2; --accent-soft:#17304c;
+      --good:#3fbf3f; --warn:#fab219; --crit:#e05252;
+      --good-bg:rgba(12,163,12,.14); --warn-bg:rgba(250,178,25,.13);
+      --crit-bg:rgba(208,59,59,.16); --na-bg:rgba(143,160,184,.14);
+      --cell-na:#3a4a63;
+      --shadow:0 1px 3px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0c1322; --panel:#121c30; --inset:#0e1728; --line:#22304a;
+    --ink:#e8eef7; --muted:#8fa0b8; --accent:#5fb2f2; --accent-soft:#17304c;
+    --good:#3fbf3f; --warn:#fab219; --crit:#e05252;
+    --good-bg:rgba(12,163,12,.14); --warn-bg:rgba(250,178,25,.13);
+    --crit-bg:rgba(208,59,59,.16); --na-bg:rgba(143,160,184,.14);
+    --cell-na:#3a4a63;
+    --shadow:0 1px 3px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --panel:#ffffff; --inset:#eef2f7; --line:#d7dfe9;
+    --ink:#1a2436; --muted:#5c6b84; --accent:#1273cc; --accent-soft:#e3effa;
+    --good:#0ca30c; --warn:#a87408; --crit:#d03b3b;
+    --good-bg:#e7f5e7; --warn-bg:#faf0d8; --crit-bg:#fae4e4; --na-bg:#e9edf3;
+    --cell-na:#a6b1c2;
+    --shadow:0 1px 3px rgba(20,35,60,.08);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .mono { font-family:ui-monospace, "SF Mono", "Cascadia Code", "DejaVu Sans Mono", Menlo, monospace; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  button { font:inherit; color:inherit; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+  .wrap { max-width:1060px; margin:0 auto; padding:0 20px 64px; }
+
+  header { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; padding:22px 0 6px; }
+  .wordmark { font-weight:650; font-size:17px; letter-spacing:.01em; }
+  .wordmark .dim { color:var(--muted); font-weight:400; }
+  .provenance { color:var(--muted); font-size:12.5px; display:flex; gap:8px;
+    align-items:center; flex-wrap:wrap; }
+  .provenance .sep { opacity:.5; }
+  .searchbox { margin-left:auto; position:relative; }
+  .searchbox input { background:var(--panel); border:1px solid var(--line); color:var(--ink);
+    border-radius:7px; padding:7px 64px 7px 12px; width:250px; font-size:13.5px; }
+  .searchbox .kbd { position:absolute; right:8px; top:50%; transform:translateY(-50%);
+    font-size:11px; color:var(--muted); border:1px solid var(--line);
+    border-radius:4px; padding:1px 5px; background:var(--inset); }
+  .lede { color:var(--muted); font-size:13.5px; margin:2px 0 18px; max-width:64ch; }
+
+  .strip-card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    box-shadow:var(--shadow); padding:16px 18px 14px; margin-bottom:14px; }
+  .strip-head { display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; margin-bottom:10px; }
+  .strip-head h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--muted); font-weight:600; margin:0; }
+  .kpis { display:flex; gap:18px; margin-left:auto; flex-wrap:wrap; }
+  .kpi { display:flex; align-items:baseline; gap:6px; }
+  .kpi b { font-size:19px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .kpi span { color:var(--muted); font-size:12.5px; }
+  .kpi.pass b { color:var(--good); }
+  .kpi.crit b { color:var(--crit); }
+  .kpi.zero b { color:var(--muted); }
+
+  .strip { display:flex; gap:3px; align-items:flex-end; }
+  .cell { flex:1 1 0; height:26px; border-radius:3px; border:0; padding:0; cursor:pointer;
+    background:var(--cell-good); opacity:.92; min-width:6px; }
+  .cell.gate { background:var(--cell-warn); height:16px; }
+  .cell.fail { background:var(--cell-crit); height:26px; }
+  .cell.notrun { background:var(--cell-na); height:10px; }
+  .cell:hover { opacity:1; transform:translateY(-2px); }
+  @media (prefers-reduced-motion: no-preference) {
+    .cell { transition:transform .12s ease, opacity .12s ease; }
+  }
+  .strip-legend { display:flex; gap:16px; margin-top:9px; font-size:12px;
+    color:var(--muted); flex-wrap:wrap; }
+  .dotk { display:inline-block; width:9px; height:9px; border-radius:2px;
+    vertical-align:-1px; margin-right:5px; }
+
+  .controls { display:flex; gap:8px; margin:18px 0 12px; flex-wrap:wrap; align-items:center; }
+  .chipbtn { border:1px solid var(--line); background:var(--panel); border-radius:16px;
+    padding:4px 12px; font-size:13px; cursor:pointer; color:var(--muted); }
+  .chipbtn[aria-pressed="true"] { background:var(--accent-soft); color:var(--ink);
+    border-color:var(--accent); }
+  .controls .right { margin-left:auto; font-size:12.5px; color:var(--muted); }
+
+  .module { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    box-shadow:var(--shadow); margin-bottom:12px; overflow:hidden; }
+  .module > h3 { margin:0; font-size:14px; font-weight:650; display:flex;
+    align-items:center; gap:10px; padding:11px 16px; cursor:pointer; user-select:none; }
+  .module > h3:hover { background:var(--inset); }
+  .module > h3 .count { color:var(--muted); font-weight:400; font-size:12.5px;
+    font-variant-numeric:tabular-nums; }
+  .module > h3 .chev { margin-left:auto; color:var(--muted); font-size:12px;
+    transform:rotate(90deg); }
+  .module.closed > h3 .chev { transform:rotate(0); }
+  .module.closed .rows { display:none; }
+
+  .row { border-top:1px solid var(--line); }
+  .row-main { display:grid; grid-template-columns:96px 1fr auto; gap:14px;
+    align-items:start; padding:11px 16px; cursor:pointer; width:100%; text-align:left;
+    background:none; border:none; }
+  .row-main:hover { background:var(--inset); }
+  .row.open .row-main { background:var(--inset); }
+  .claim { font-size:14px; }
+  .meta { color:var(--muted); font-size:12px; margin-top:3px; display:flex;
+    gap:10px; flex-wrap:wrap; }
+  .meta .k { color:var(--accent); }
+  .aux { text-align:right; color:var(--muted); font-size:12px; white-space:nowrap;
+    font-variant-numeric:tabular-nums; padding-top:2px; }
+  .aux b { color:var(--ink); font-weight:550; }
+
+  .status { display:inline-flex; align-items:center; gap:5px; border-radius:5px;
+    font-size:11.5px; font-weight:600; padding:2.5px 8px; letter-spacing:.02em;
+    white-space:nowrap; margin-top:1px; }
+  .status .ic { font-size:10px; }
+  .st-pass { background:var(--good-bg); color:var(--good); }
+  .st-gate { background:var(--warn-bg); color:var(--warn); }
+  .st-fail { background:var(--crit-bg); color:var(--crit); }
+  .st-na   { background:var(--na-bg); color:var(--muted); }
+
+  .row-detail { display:none; padding:4px 16px 16px 126px; }
+  .row.open .row-detail { display:block; }
+  .row-detail p { margin:6px 0; font-size:13.5px; max-width:72ch; }
+  .cmd { display:flex; align-items:center; gap:10px; background:var(--inset);
+    border:1px solid var(--line); border-radius:7px; padding:8px 12px;
+    font-size:12.5px; overflow-x:auto; margin-top:8px; }
+  .cmd code { white-space:nowrap; }
+  .cmd button { border:1px solid var(--line); background:var(--panel); border-radius:5px;
+    font-size:11.5px; padding:2px 9px; cursor:pointer; color:var(--muted); flex-shrink:0; }
+  .cmd button:hover { color:var(--ink); }
+  .detail-meta { display:flex; gap:18px; flex-wrap:wrap; margin-top:9px;
+    font-size:12px; color:var(--muted); }
+  .runnote { font-size:12px; color:var(--muted); font-style:italic; }
+
+  .legend { display:flex; gap:14px; flex-wrap:wrap; margin:22px 0 8px; font-size:12.5px;
+    color:var(--muted); align-items:center; }
+  footer { color:var(--muted); font-size:12px; margin-top:26px; max-width:78ch; }
+
+  #tip { position:fixed; pointer-events:none; z-index:10; display:none;
+    background:var(--ink); color:var(--bg); font-size:12px; border-radius:6px;
+    padding:5px 9px; max-width:280px; box-shadow:0 2px 8px rgba(0,0,0,.3); }
+
+  @media (max-width:720px) {
+    .row-main { grid-template-columns:86px 1fr; }
+    .aux { display:none; }
+    .row-detail { padding-left:16px; }
+    .searchbox input { width:160px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="wordmark mono">JunaCore <span class="dim">/ evidence</span></div>
+    <div class="provenance mono" id="prov"></div>
+    <div class="searchbox">
+      <input id="q" type="search" placeholder="Filter suites&hellip;" aria-label="Filter suites">
+      <span class="kbd">Ctrl-K</span>
+    </div>
+  </header>
+  <p class="lede">Every registered test suite, the claim it proves about the JunaCore
+  underwater-acoustic OFDM modem, and its latest recorded result. Read-only snapshot
+  &mdash; runs execute in CI or the local workbench.
+  <a href="https://github.com/GabrielARL/JunaCoreTests">Repository</a> &middot;
+  <a href="./">Test symbol explorer</a></p>
+
+  <section class="strip-card" aria-label="Suite overview">
+    <div class="strip-head">
+      <h2 id="strip-title"></h2>
+      <div class="kpis" id="kpis"></div>
+    </div>
+    <div class="strip" id="strip" role="list"></div>
+    <div class="strip-legend" id="strip-legend"></div>
+  </section>
+
+  <div class="controls" role="group" aria-label="Status filters">
+    <button class="chipbtn" data-f="all" aria-pressed="true">All</button>
+    <button class="chipbtn" data-f="pass" aria-pressed="false">Passed</button>
+    <button class="chipbtn" data-f="fail" aria-pressed="false">Failed</button>
+    <button class="chipbtn" data-f="gate" aria-pressed="false">Gated</button>
+    <button class="chipbtn" data-f="notrun" aria-pressed="false">Not run</button>
+    <span class="right" id="shown"></span>
+  </div>
+
+  <div id="modules"></div>
+
+  <div class="legend">
+    <span class="status st-pass"><span class="ic">&#10003;</span>passed</span>
+    <span class="status st-fail"><span class="ic">&#10005;</span>failed</span>
+    <span class="status st-gate"><span class="ic">&#9711;</span>gate off</span>
+    <span class="status st-na"><span class="ic">&mdash;</span>not run</span>
+    <span>Failed suites always lead their group. &ldquo;Gate off&rdquo; is an
+    external-data or hours-scale gate that is deliberately opt-in; its enabling
+    variable is shown. Nothing renders as a pass without a recorded passing run.</span>
+  </div>
+
+  <footer>Generated by <span class="mono">tools/build_evidence_page.py</span> from the
+  suite registry in <span class="mono">test/runtests.jl</span> and the recorded run in
+  <span class="mono">reports/evidence.json</span>. Served locally by the workbench, the
+  same page gains per-suite Run buttons.</footer>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+const DATA =
+/*EVIDENCE*/
+{"meta": {"generated_at": "2026-07-20T10:24:22Z", "commit": "0d3c977-dirty", "julia": "1.12.6", "selectors": [], "env_set": []}, "modules": ["Package & public interface", "OFDM geometry & pilots", "LDPC coding & framing", "Sync & acquisition", "Front end & equalization", "JUNA receivers & channels", "Replay & reproduction (opt-in)"], "suites": [{"key": "packaging", "file": "source_layout.jl", "title": "Source layout and solver loading", "claim": "the wrapper loads shared common code plus public Lite, Full, Coupled, Frame-wide LDPC, and JUNA-FrameRLS facades from the receiver implementation files", "module": 0, "status": "pass", "gate_env": [], "passes": 33, "fails": 0, "errors": 0, "broken": 0, "seconds": 0.775}, {"key": "config", "file": "receiver_configuration.jl", "title": "Receiver selection and init defaults", "claim": ":lite, :full, :coupled, and :frame_wide_ldpc select distinct modems (:robust aliases :full); init() resets to the n1024_cp256_sym1_p3_r0p25_..._ip2 benchmark geometry", "module": 0, "status": "pass", "gate_env": [], "passes": 51, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.281}, {"key": "interface", "file": "public_modem_interface.jl", "title": "Public modulate/demodulate boundary", "claim": "every registered receiver crosses the m-sequence, 3x3 fc/fs, Standard/Partial/JUNA, named geometry, waveform-length, metric-polarity, payload-rate, and error contracts; supported p16/P16 boundaries and a non-default rate/pilot geometry recover clean payloads, while unsupported BPSK refinements reject explicitly", "module": 0, "status": "pass", "gate_env": [], "passes": 1864, "fails": 0, "errors": 0, "broken": 0, "seconds": 66.634}, {"key": "input-robustness", "file": "public_input_robustness.jl", "title": "Public input integrity and benign waveform transformations", "claim": "all receivers reject invalid frequency/payload arguments, non-finite samples, untrainable pilot combs, impossible LDPC codes, excessive Partial-FFT views, and invalid bandwidths before decoding; finite gain/DC/trailing samples preserve payload, while silence and seeded noise produce deterministic metrics or a deterministic acquisition rejection", "module": 0, "status": "pass", "gate_env": [], "passes": 755, "fails": 0, "errors": 0, "broken": 0, "seconds": 8.813}, {"key": "contract", "file": "interface_contract.jl", "title": "Modem interface and refinement capability contract", "claim": "the shared receiver descriptor catalog exactly covers all seven public runtime modes; every path satisfies Modulations, executes its declared objective, and decodes a noiseless loopback payload-exactly", "module": 0, "status": "pass", "gate_env": ["JUNA_INTERFACE_ROUNDTRIP"], "passes": 406, "fails": 0, "errors": 0, "broken": 0, "seconds": 7.242}, {"key": "sizing", "file": "payload_block_sizing.jl", "title": "Payload bits and block sizing", "claim": "positive payload sizes exclude inner pilots (170 unknown of k=340), reject zero, and count 1280-sample blocks (N=1024 + CP 256)", "module": 1, "status": "pass", "gate_env": [], "passes": 24, "fails": 0, "errors": 0, "broken": 0, "seconds": 0.148}, {"key": "pilots", "file": "pilot_ratio_handling.jl", "title": "Pilot ratio snapping, placement, and roundtrip matrix", "claim": "dense ratios snap to the nearest 1/k comb; p2-p16 outer FFT placement and inner-off/ip2-ip16 message placement are verified, and every registered receiver passes every valid p3-p16 public roundtrip", "module": 1, "status": "pass", "gate_env": [], "passes": 1115, "fails": 0, "errors": 0, "broken": 0, "seconds": 10.833}, {"key": "layout", "file": "ofdm_layout.jl", "title": "OFDM tone layout and band partition", "claim": "DC-nulled active tones split into comb pilots and data bands; bw*fs sets occupied width and integer dc0 shifts the RF centre from fc in kHz", "module": 1, "status": "pass", "gate_env": [], "passes": 49, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.996}, {"key": "frequency-geometry", "file": "rf_frequency_geometry.jl", "title": "RF occupied bandwidth and centre-frequency contract", "claim": "every public receiver's actual OFDM waveform occupies bw*fs around fc + dc0 kHz and roundtrips payload-exactly; FrameRLS proves its pinned full-band protocol and rejects unsupported shifts", "module": 1, "status": "pass", "gate_env": [], "passes": 138, "fails": 0, "errors": 0, "broken": 0, "seconds": 3.173}, {"key": "carrier", "file": "carrier_mapping_and_modulation.jl", "title": "Carrier mapping and OFDM modulation", "claim": "coded bits map to BPSK/QPSK data carriers with deterministic pilots, filler tones, IFFT samples, CP prefix, and normalized block power", "module": 1, "status": "pass", "gate_env": [], "passes": 37, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.572}, {"key": "ldpc", "file": "ldpc_code_construction.jl", "title": "LDPC code construction and cache", "claim": "vendored LDPC helpers run without machine-local files; range-safe geometry seeds reproduce identical H/G matrices, Tanner adjacency and GF(2) parity, while cache invalidation and helper failures remain deliberate", "module": 2, "status": "pass", "gate_env": [], "passes": 23044, "fails": 0, "errors": 0, "broken": 0, "seconds": 3.866}, {"key": "framing", "file": "message_framing_and_encoding.jl", "title": "Message framing and LDPC encoding", "claim": "payload bits, zero fill, and deterministic inner pilots form general LDPC message rows across code sizes/spacings; extraction, systematic encoding, and parity preserve the contract", "module": 2, "status": "pass", "gate_env": [], "passes": 1514, "fails": 0, "errors": 0, "broken": 0, "seconds": 2.985}, {"key": "bp", "file": "ldpc_belief_propagation.jl", "title": "Exact and normalized-min-sum belief propagation", "claim": "the exact tanh/atanh sum-product reference and the profiled normalized min-sum decoder use public metric polarity, finite degree-one saturation, inner-pilot clamps, matching scratch buffers, and valid/invalid syndrome status", "module": 2, "status": "pass", "gate_env": [], "passes": 96, "fails": 0, "errors": 0, "broken": 0, "seconds": 3.745}, {"key": "frame-wide-ldpc", "file": "frame_wide_ldpc.jl", "title": "Frame receivers and the public JUNA-FrameRLS path", "claim": "Standard, Partial-FFT, Lite, Wz, and WCz frame profiles decode one sparse systematic (Bk,Bn) graph spanning all OFDM blocks; JunaFrameRLS exposes the Rpchan-compatible stateful band-RLS/JUNA profile through the shared public interface while ordinary receivers retain per-symbol codes", "module": 2, "status": "pass", "gate_env": [], "passes": 147, "fails": 0, "errors": 0, "broken": 0, "seconds": 4.141}, {"key": "sync", "file": "sync_waveform.jl", "title": "LFM sync and matched correlation", "claim": "sync=true produces a deterministic unit-magnitude LFM pre/postamble and matched-correlation peak for every LFM-capable receiver; JUNA-FrameRLS is intentionally covered by the separate Rpchan acquisition contract", "module": 3, "status": "pass", "gate_env": [], "passes": 80, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.005}, {"key": "sync-doppler", "file": "coarse_doppler_correction.jl", "title": "Sync-assisted frame timing and Doppler correction", "claim": "sync peaks drive coarse time-scale/CFO estimation and block-region resampling, and every registered receiver's sync=true public demodulation recovers a padded multi-block payload", "module": 3, "status": "pass", "gate_env": [], "passes": 86, "fails": 0, "errors": 0, "broken": 0, "seconds": 4.046}, {"key": "acquisition", "file": "rpchan_acquisition.jl", "title": "Rpchan preamble Doppler and payload acquisition", "claim": "the deterministic Rpchan QPSK preamble, normalized lag correlation, polyphase time-scale resampling, carrier derotation, and payload extraction recover lagged multi-block frames through every public receiver", "module": 3, "status": "pass", "gate_env": [], "passes": 90, "fails": 0, "errors": 0, "broken": 0, "seconds": 7.224}, {"key": "frontend", "file": "receive_block_front_end.jl", "title": "Partial-FFT receive front end", "claim": "received OFDM blocks drop CP, split useful samples into partial-FFT branches, and branch sums reconstruct the standard FFT view", "module": 4, "status": "pass", "gate_env": [], "passes": 42, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.95}, {"key": "equalization", "file": "pilot_equalization.jl", "title": "Pilot-trained ridge LS equalization", "claim": "pilot-trained branch weights solve ordinary and confidence-weighted ridge LS systems, residual pilot normalization removes flat/interpolated responses, and time-varying branch channels require the combiner before LDPC/BP", "module": 4, "status": "pass", "gate_env": [], "passes": 55, "fails": 0, "errors": 0, "broken": 0, "seconds": 7.0}, {"key": "candidate", "file": "candidate_demodulation.jl", "title": "Soft-metric candidate demodulation", "claim": "equalized carriers become correctly signed soft metrics; candidate ties use the paper's confidence-weighted posterior MSE for QPSK and BPSK; clean candidates return finite valid payload bits", "module": 4, "status": "pass", "gate_env": [], "passes": 65, "fails": 0, "errors": 0, "broken": 0, "seconds": 3.322}, {"key": "synthetic-channel", "file": "synthetic_uwa_channel.jl", "title": "Synthetic underwater multipath and per-path Doppler", "claim": "the six-tap paper PDP, full linear convolution, per-path time scale and carrier Doppler, and calibrated seeded AWGN form a replay-data-free physical channel gate for native JunaCore receivers; FrameRLS uses the same stateful algorithm already covered by Frame-wide LDPC here, while its pinned Rpchan protocol is judged by acquisition, golden-frame, and measured-channel gates", "module": 5, "status": "pass", "gate_env": [], "passes": 158, "fails": 0, "errors": 0, "broken": 0, "seconds": 7.571}, {"key": "lite", "file": "juna_lite_refinement.jl", "title": "JUNA-lite soft-anchor refinement", "claim": "posterior metrics become confidence-weighted soft data anchors, JUNA-lite refits an invalid seed into a finite valid candidate, and valid seeds are preserved", "module": 5, "status": "pass", "gate_env": [], "passes": 47, "fails": 0, "errors": 0, "broken": 0, "seconds": 2.583}, {"key": "full", "file": "juna_full_refinement.jl", "title": "JUNA-Wz reduced-gradient refinement", "claim": "the reduced-gradient W,z objective has finite and finite-difference-checked gradients, returns valid decoded candidates, and keeps the best full-receiver candidate", "module": 5, "status": "pass", "gate_env": [], "passes": 63, "fails": 0, "errors": 0, "broken": 0, "seconds": 3.079}, {"key": "coupled", "file": "juna_coupled_specification.jl", "title": "JUNA-WCz ideal and deployed objective specification", "claim": "the paper's per-carrier C/W objective and the deployed band-tied seven-term objective have checked shapes and gradients; the fixed runtime weights make observation physics overrule a deliberately misleading W-z tie, and the profiled path has independent C stationarity, exhaustive finite differences, and joint quadratic Taylor convergence", "module": 5, "status": "pass", "gate_env": [], "passes": 243, "fails": 0, "errors": 0, "broken": 0, "seconds": 21.309}, {"key": "coupled-init", "file": "juna_coupled_initialization.jl", "title": "JUNA-WCz real problem and initialization", "claim": "one real Partial-FFT/LDPC block maps exactly into the constrained problem and deterministically initializes finite pilot-trained W, profiled K=1 C, and BP-seeded clamp-safe z", "module": 5, "status": "pass", "gate_env": [], "passes": 38, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.396}, {"key": "coupled-solver", "file": "juna_coupled_optimization.jl", "title": "JUNA-WCz bounded joint optimizer", "claim": "bounded joint Adam consumes the hand-derived C/W/z gradient, preserves hard clamps, records finite loss history, recovers a controlled ICI fixture, and returns the best finite checkpoint", "module": 5, "status": "pass", "gate_env": [], "passes": 53, "fails": 0, "errors": 0, "broken": 0, "seconds": 2.3}, {"key": "coupled-bcd", "file": "juna_coupled_block_coordinate.jl", "title": "JUNA-WCz safeguarded block-coordinate optimizer", "claim": "alternating W, C, and z updates use the same frozen objective and hand-derived gradients as joint Adam; per-block backtracking keeps every complete cycle finite and monotonically non-increasing", "module": 5, "status": "pass", "gate_env": [], "passes": 33, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.812}, {"key": "coupled-candidate", "file": "juna_coupled_candidate.jl", "title": "JUNA-WCz candidate and public receiver", "claim": "the optimized W,z state becomes a finite LDPC candidate, best-candidate selection cannot regress its seed, and public CoupledModulation declares and executes :coupled_cwz through the shared modem interface", "module": 5, "status": "pass", "gate_env": [], "passes": 21, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.574}, {"key": "coupled-e2e", "file": "juna_coupled_end_to_end.jl", "title": "JUNA-WCz clean and impaired end-to-end", "claim": "public CoupledModulation decodes clean and mismatched channels, dispatches to the coupled solver, improves its fixed 0 dB seed, and bounds the proxy-versus-truth tradeoff at 1.5 dB without treating hidden BER as an acceptance oracle", "module": 5, "status": "pass", "gate_env": [], "passes": 28, "fails": 0, "errors": 0, "broken": 0, "seconds": 4.541}, {"key": "pfft", "file": "partial_fft_receiver.jl", "title": "Baseline receivers: standard OFDM and partial FFT", "claim": "the paper's OFDM+FEC and Partial FFT+FEC benchmark branches are public receiver modes pinned to their demodulate_methods columns, per-band combining survives the within-symbol channel one-tap cannot, lite never loses to its own seed, and both baselines roundtrip BPSK", "module": 5, "status": "pass", "gate_env": [], "passes": 16, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.751}, {"key": "noise", "file": "noise_roundtrip.jl", "title": "Seeded-AWGN waterfall roundtrip", "claim": "every catalogued receiver decodes the same seeded payload and noise realizations with matched FEC waveforms: ordinary codes are clean at 4 dB, the sparse frame code at 7 dB, all error at 1.5 dB, remain channel-limited at 0 dB, and are monotone in SNR", "module": 5, "status": "pass", "gate_env": [], "passes": 71, "fails": 0, "errors": 0, "broken": 0, "seconds": 30.91}, {"key": "replay-download", "file": "replay_channel_download.jl", "title": "Replay: channel capture download", "claim": "measured-channel color captures can be named, URL-resolved, MAT-signature-gated, and explicitly downloaded before replay decode tests", "module": 6, "status": "gate", "gate_env": ["JUNA_REPLAY_DOWNLOAD"], "passes": 20, "fails": 0, "errors": 0, "broken": 1, "seconds": 3.887}, {"key": "replay-schema", "file": "replay_mat_schema.jl", "title": "Replay: MAT file schema", "claim": "downloaded replay-channel MAT files expose h_hat, phase estimates, and params in the shape consumed by the measured-channel reader", "module": 6, "status": "gate", "gate_env": ["JUNA_REPLAY_DOWNLOAD", "JUNA_REPLAY_SCHEMA"], "passes": 18, "fails": 0, "errors": 0, "broken": 1, "seconds": 1.367}, {"key": "replay-segment", "file": "replay_coupled_segment.jl", "title": "Replay: coupled measured segment decode", "claim": "ReplayCh-compatible 9.6 kHz baseband on the red_1 19.2 kHz delay grid decodes receiver 3 snapshot 1 exactly with JUNA-WCz, preserves the already-valid seed while the optimizer lowers its objective, and records BER, syndrome, iteration, alignment, and decode time", "module": 6, "status": "gate", "gate_env": ["JUNA_REPLAY_SEGMENT"], "passes": 44, "fails": 0, "errors": 0, "broken": 1, "seconds": 14.033}, {"key": "golden-diff", "file": "rpchan_golden_comparison.jl", "title": "Replay: one-frame stage-by-stage golden comparison", "claim": "one immutable SG-1 passband frame is compared across ReplayCh and JunaCore at lag, Partial-FFT carriers, seed RLS symbols/LLRs/LDPC output, and final JUNA symbols/LLRs/LDPC output; downstream stages block after the first divergence", "module": 6, "status": "gate", "gate_env": ["JUNA_RPCHAN_GOLDEN"], "passes": 19, "fails": 0, "errors": 0, "broken": 1, "seconds": 5.177}, {"key": "receiver-benchmark", "file": "receiver_channel_benchmark.jl", "title": "Replay: colored-channel and matched frame-wide benchmark", "claim": "the common page compares five receiver-only profiles on identical per-symbol-coded samples; a separate matched-transmitter lane pins all twelve paper configurations and applies Rpchan's re-encoded packet-success rule to JUNA Frame-wide LDPC without pretending it consumed the shared waveform", "module": 6, "status": "gate", "gate_env": ["JUNA_RECEIVER_BENCHMARK_PREFLIGHT", "JUNA_RECEIVER_BENCHMARK_REAL"], "passes": 573, "fails": 0, "errors": 0, "broken": 2, "seconds": 98.635}, {"key": "commit-rate-benchmark", "file": "commit_code_rate_benchmark.jl", "title": "Replay: commit-by-code-rate and pilot-ratio receiver matrix", "claim": "every receiver supports N=512/1024/2048, CP=16 LDPC geometries at rates 1/16, 1/8, 1/4, and 1/2 and requested total pilot ratios 0.25, 0.50, and 0.75 split equally across inner and outer combs; the measured SG-1 recorder covers the full 47-second channel and reports block PSR, mean BER, mean decode time, and effective rate for all 180 cases under the clean JunaCore source commit", "module": 6, "status": "pass", "gate_env": [], "passes": 4323, "fails": 0, "errors": 0, "broken": 0, "seconds": 9.177}, {"key": "commit-frame-benchmark", "file": "commit_frame_benchmark.jl", "title": "Replay: commit-by-geometry true frame-wide receiver matrix", "claim": "the same 36 SG-1 geometries run through five receiver algorithms with one LDPC codeword and parity graph spanning ten OFDM blocks; the table reports exact-frame PSR, mean BER, decode time per frame, and successful-frame effective rate for all 180 cells", "module": 6, "status": "pass", "gate_env": [], "passes": 1682, "fails": 0, "errors": 0, "broken": 0, "seconds": 7.304}, {"key": "replay-scripts", "file": "replay_reproduction_scripts.jl", "title": "Replay: paper reproduction scripts", "claim": "scripted smoke/proxy/full workflows reproduce the measured-channel juna.tex pipeline without hiding the 6 GB data and hours-scale full run", "module": 6, "status": "pass", "gate_env": [], "passes": 47, "fails": 0, "errors": 0, "broken": 0, "seconds": 1.173}, {"key": "replay-gates", "file": "replay_reproduction_gates.jl", "title": "Replay: staged reproduction gates", "claim": "repo boundary, ReplayCh workbench shape, data integrity, import, smoke, sanity, figure, TeX, proxy, spot-check, and full reproduction gates are explicit, opt-in by cost, and skipped when disabled", "module": 6, "status": "gate", "gate_env": [], "passes": 35, "fails": 0, "errors": 0, "broken": 11, "seconds": 4.703}], "kpi_assertions": 36514}
+/*EVIDENCE*/
+;
+const STATUS_LABEL = {pass:"passed", fail:"failed", gate:"gate off", notrun:"not run"};
+const STATUS_ICON = {pass:"✓", fail:"✕", gate:"◯", notrun:"—"};
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+const meta = DATA.meta || {};
+const suites = DATA.suites;
+const counts = {pass:0, fail:0, gate:0, notrun:0};
+suites.forEach(s => { counts[s.status]++; });
+const assertions = DATA.kpi_assertions || 0;
+
+$("#prov").innerHTML = meta.commit
+  ? "commit " + esc(meta.commit) +
+    (meta.generated_at ? " <span class='sep'>&middot;</span> " + esc(meta.generated_at) : "") +
+    (meta.julia ? " <span class='sep'>&middot;</span> julia " + esc(meta.julia) : "")
+  : "no recorded run yet";
+$("#strip-title").textContent = suites.length + " suites · one cell each";
+$("#kpis").innerHTML =
+  "<div class='kpi pass'><b>" + counts.pass + "</b><span>passed</span></div>" +
+  "<div class='kpi " + (counts.fail ? "crit" : "zero") + "'><b>" + counts.fail +
+    "</b><span>failed</span></div>" +
+  "<div class='kpi'><b>" + counts.gate + "</b><span>gates off</span></div>" +
+  (counts.notrun ? "<div class='kpi'><b>" + counts.notrun + "</b><span>not run</span></div>" : "") +
+  "<div class='kpi'><b>" + assertions.toLocaleString() +
+    "</b><span>assertions in passing suites</span></div>";
+$("#strip-legend").innerHTML =
+  "<span><i class='dotk' style='background:var(--cell-good)'></i>passed</span>" +
+  (counts.fail ? "<span><i class='dotk' style='background:var(--cell-crit)'></i>failed</span>" : "") +
+  "<span><i class='dotk' style='background:var(--cell-warn)'></i>opt-in gate off</span>" +
+  (counts.notrun ? "<span><i class='dotk' style='background:var(--cell-na)'></i>not run</span>" : "") +
+  "<span>hover a cell to identify it · click to jump to its claim</span>";
+
+const strip = $("#strip"), tip = $("#tip");
+suites.forEach(s => {
+  const b = document.createElement("button");
+  b.className = "cell" + (s.status === "pass" ? "" : " " + s.status);
+  b.setAttribute("role", "listitem");
+  b.setAttribute("aria-label", s.key + " — " + STATUS_LABEL[s.status]);
+  b.addEventListener("mousemove", e => {
+    tip.style.display = "block";
+    tip.innerHTML = "<b>" + esc(s.key) + "</b> · " + STATUS_LABEL[s.status] +
+      "<br>" + esc(s.title);
+    tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  });
+  b.addEventListener("mouseleave", () => tip.style.display = "none");
+  b.addEventListener("click", () => { location.hash = s.key; openRow(s.key, true); });
+  strip.appendChild(b);
+});
+
+function shortClaim(c) {
+  return c.length > 120 ? c.slice(0, c.lastIndexOf(" ", 117)) + "…" : c;
+}
+
+function auxHtml(s) {
+  if (s.status === "pass")
+    return "<b>" + (s.passes || 0).toLocaleString() + "</b> assertions" +
+      (s.seconds != null ? "<br>" + s.seconds.toFixed(1) + " s" : "");
+  if (s.status === "fail")
+    return "<b>" + (s.fails + s.errors) + "</b> failed · " +
+      (s.passes || 0).toLocaleString() + " passed";
+  if (s.status === "gate")
+    return s.gate_env.length
+      ? "opt-in<br><span class='mono'>" + esc(s.gate_env[0]) + "=1</span>"
+      : "opt-in<br>" + (s.broken || 0) + " stage" + (s.broken === 1 ? "" : "s") + " skipped";
+  return "—";
+}
+
+function detailMeta(s) {
+  if (s.status === "gate") {
+    const ran = s.passes ? s.passes.toLocaleString() +
+      " cheap assertions passed; " : "";
+    const skipped = s.broken ? s.broken + " opt-in stage" +
+      (s.broken === 1 ? "" : "s") + " skipped. " : "";
+    const how = s.gate_env.length
+      ? "Each stage enables independently, e.g. <code class='mono'>" +
+        esc(s.gate_env[0]) + "=1</code>" +
+        (s.gate_env.length > 1 ? " (also: <code class='mono'>" +
+          esc(s.gate_env.slice(1).join(", ")) + "</code>)" : "")
+      : "See the suite file header for its enabling JUNA_* switches";
+    return "<span>" + ran + skipped + how + ", with its data present.</span>";
+  }
+  if (s.status === "notrun")
+    return "<span>no recorded run for this suite yet</span>";
+  if (s.status === "fail")
+    return "<span>" + s.fails + " failed, " + s.errors + " errored, " +
+      (s.passes || 0) + " passed</span>";
+  return "<span>" + (s.passes || 0).toLocaleString() + " assertions passed" +
+    (s.seconds != null ? " in " + s.seconds.toFixed(1) + " s" : "") + "</span>";
+}
+
+const wrapEl = $("#modules");
+DATA.modules.forEach((name, mi) => {
+  const group = suites.filter(s => s.module === mi);
+  if (!group.length) return;
+  const passed = group.filter(s => s.status === "pass").length;
+  const failed = group.filter(s => s.status === "fail").length;
+  const sec = document.createElement("section");
+  sec.className = "module";
+  const label = failed ? passed + " passed · " + failed + " FAILED"
+    : passed === group.length ? group.length + " / " + group.length + " passed"
+    : passed + " passed · " + (group.length - passed) + " gated or not run";
+  sec.innerHTML = "<h3><span>" + esc(name) + "</span><span class='count'>" + label +
+    "</span><span class='chev'>▶</span></h3><div class='rows'></div>";
+  $("h3", sec).addEventListener("click", () => sec.classList.toggle("closed"));
+  const rowsEl = $(".rows", sec);
+  group.forEach(s => rowsEl.appendChild(renderRow(s)));
+  wrapEl.appendChild(sec);
+});
+
+function renderRow(s) {
+  const row = document.createElement("div");
+  row.className = "row"; row.id = s.key; row.dataset.status = s.status;
+  row.innerHTML =
+    "<button class='row-main' aria-expanded='false'>" +
+      "<span><span class='status st-" + (s.status === "notrun" ? "na" : s.status) +
+        "'><span class='ic'>" + STATUS_ICON[s.status] + "</span>" +
+        STATUS_LABEL[s.status] + "</span></span>" +
+      "<span><span class='claim'>" + esc(shortClaim(s.claim)) + "</span>" +
+        "<span class='meta'><span class='k mono'>" + esc(s.key) + "</span><span>" +
+        esc(s.title) + "</span></span></span>" +
+      "<span class='aux'>" + auxHtml(s) + "</span>" +
+    "</button>" +
+    "<div class='row-detail'>" +
+      "<p>" + esc(s.claim) + "</p>" +
+      "<div class='cmd'><code class='mono'>julia --project=. test/runtests.jl " +
+        esc(s.key) + "</code><button data-cmd='" + esc(s.key) + "'>copy</button></div>" +
+      "<div class='detail-meta'>" + detailMeta(s) +
+        "<span class='runnote'>Run button appears when served by the local workbench</span>" +
+      "</div>" +
+    "</div>";
+  $(".row-main", row).addEventListener("click", () => {
+    const open = row.classList.toggle("open");
+    $(".row-main", row).setAttribute("aria-expanded", open);
+  });
+  const cp = $("[data-cmd]", row);
+  cp.addEventListener("click", e => {
+    e.stopPropagation();
+    if (navigator.clipboard)
+      navigator.clipboard.writeText("julia --project=. test/runtests.jl " + s.key);
+    cp.textContent = "copied"; setTimeout(() => cp.textContent = "copy", 1200);
+  });
+  return row;
+}
+
+function openRow(key, scroll) {
+  const row = document.getElementById(key);
+  if (!row) return;
+  row.closest(".module").classList.remove("closed");
+  row.classList.add("open");
+  $(".row-main", row).setAttribute("aria-expanded", "true");
+  if (scroll) row.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+let activeFilter = "all";
+document.querySelectorAll(".chipbtn").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".chipbtn").forEach(x => x.setAttribute("aria-pressed", "false"));
+    b.setAttribute("aria-pressed", "true");
+    activeFilter = b.dataset.f;
+    applyFilter();
+  });
+});
+$("#q").addEventListener("input", applyFilter);
+addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault(); $("#q").focus();
+  }
+});
+
+function applyFilter() {
+  const q = $("#q").value.trim().toLowerCase();
+  let shown = 0;
+  suites.forEach(s => {
+    const row = document.getElementById(s.key);
+    const ok = (activeFilter === "all" || s.status === activeFilter) &&
+      (!q || (s.key + " " + s.title + " " + s.claim).toLowerCase().includes(q));
+    row.style.display = ok ? "" : "none";
+    if (ok) shown++;
+  });
+  document.querySelectorAll(".module").forEach(m => {
+    const any = [...m.querySelectorAll(".row")].some(r => r.style.display !== "none");
+    m.style.display = any ? "" : "none";
+  });
+  $("#shown").textContent = shown === suites.length ? "" : shown + " of " + suites.length + " suites";
+}
+
+if (location.hash) openRow(location.hash.slice(1), true);
+</script>
+</body>
+</html>

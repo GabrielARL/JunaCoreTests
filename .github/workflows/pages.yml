@@ -6,7 +6,11 @@ on:
     paths:
       - "docs/test_symbol_explorer.html"
       - "tools/build_static_pages.py"
+      - "tools/build_evidence_page.py"
       - "test/static_pages_contract.py"
+      - "test/evidence_page_contract.py"
+      - "test/runtests.jl"
+      - "reports/evidence.json"
       - "README.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -28,11 +32,24 @@ jobs:
       - name: Verify static Explorer contract
         run: python3 test/static_pages_contract.py
 
+      - name: Verify Evidence page contract
+        run: python3 test/evidence_page_contract.py
+
       - name: Build static Explorer
         run: >-
           python3 tools/build_static_pages.py
           --source docs/test_symbol_explorer.html
           --out-dir _site
+
+      # Push deploys render the committed snapshot in reports/evidence.json
+      # (its own generated_at/commit provenance is displayed on the page);
+      # the nightly on-demand-tests deploy refreshes it with a live run.
+      - name: Build Evidence page
+        run: >-
+          python3 tools/build_evidence_page.py
+          --registry test/runtests.jl
+          --evidence reports/evidence.json
+          --out _site/evidence.html
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
